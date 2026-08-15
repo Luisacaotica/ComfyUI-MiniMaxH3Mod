@@ -323,11 +323,19 @@ python custom_nodes/ComfyUI-MiniMaxH3Mod/extract_mod.py \
 ```
 
 ```bash
-# tiny concept/motion mod (pooled, 16x16x16, identity 500)
+# concept/motion mod (pooled, 8x8 grid — the concept sweet spot)
 python custom_nodes/ComfyUI-MiniMaxH3Mod/extract_mod.py \
     --video dance.mp4 \
     --vae path/to/h3_video_vae.safetensors \
-    --name dance --pool 16 --latent-frames 16 --identity 500
+    --name dance --pool 8 --latent-frames 16 --identity 500
+```
+
+```bash
+# pooled identity mod (16x16 grid keeps more detail, identity steps refine it)
+python custom_nodes/ComfyUI-MiniMaxH3Mod/extract_mod.py \
+    --image char.png \
+    --vae path/to/h3_video_vae.safetensors \
+    --name char_id --pool 16 --latent-frames 16 --identity 1000
 ```
 
 Options: `--mode full|pooled`, `--resolution` (full mode short edge),
