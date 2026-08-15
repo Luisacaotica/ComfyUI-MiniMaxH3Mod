@@ -1,4 +1,4 @@
-# ComfyUI-MiniMaxH3Mod
+# ComfyUI-MiniMaxH3Mod - Changing the F#cking world with cigarretes and coffe.
 
 > 🚧 **Under construction** — API and node schemas are still evolving. Mods
 > stay compatible, but expect node names/inputs to shift between versions.
