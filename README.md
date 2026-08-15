@@ -121,6 +121,24 @@ stores weight deltas for billions of parameters; a full RefMod stores the
 actual encoded reference — a few hundred KB per image frame — which is the
 honest cost of identity.
 
+### Pool size — the concept ↔ identity dial
+
+`pool_h` / `pool_w` on Extract is the concept ↔ identity control for pooled
+mode, and it's worth knowing before you extract:
+
+- **Small pool (4×4) = concept.** Few tokens, the mod keeps the *general
+  idea* — colors, the overall look, a dance move — and lets the model
+  improvise the framing, background and subject details.
+- **Big pool (16×16) = identity.** More tokens, the mod keeps *specific
+  detail* — but also the framing, background and subjects of your refs.
+  Extract a concept at a high pool and the output can get "infected" by
+  your data: it starts copying the composition, the objects, the people in
+  your shots.
+
+So **4×4 is the sweet spot for concepts, 16×16 for identity** — the same
+rule of thumb as `full` vs `pooled` mode: more information stored in the
+latent = more identity, less = more freedom.
+
 ## Nodes (`MiniMax-H3/mod`)
 
 | Node | What it does |
@@ -200,6 +218,23 @@ same `retention` master control.
 Works with `MiniMaxH3Conditioning`, `MiniMaxH3ReferenceToVideo`, and any
 conditioning that carries refs/keyframes — the mod ref blocks are appended
 to the existing ones.
+
+### Describe the mod in your prompt
+
+A mod is a few KB of compressed attention — it makes the model *look at*
+your refs, but it doesn't *know* what they are. It's not a concept
+automation: if you don't tell the model what the mod contains, it has
+nothing to anchor on and you'll get a video just traveling through your
+data (which, honestly, is a cool effect on its own — all from a few KB in
+the conditioning).
+
+For reliable results, spell out what you extracted in the prompt, like
+pointing at what you want the model to focus on:
+
+- extracted a ginger woman → write **"a ginger woman"**
+- extracted a handcam walk → write **"pov handcam walking"**
+- extracted a dance → write **"person dancing"**Prompt + mod together are what make the character/concept actually show up
+in the output.
 
 ## Examples (screenshots)
 
