@@ -3,6 +3,31 @@
 > 🚧 **Under construction** — API and node schemas are still evolving. Mods
 > stay compatible, but expect node names/inputs to shift between versions.
 
+## TL;DR (for the busy / new to this)
+
+In MiniMax H3 you can give the AI a **reference** — an image, a video, even a
+GIF — to tell it *"look like this"*. That's powerful, but every reference
+gets loaded and processed every time you generate, which is slow and can
+"bleed" its look into everything else in your video.
+
+This pack lets you **save that reference once as a tiny `.safetensors` file**
+(a "mod"), and then reuse it as many times as you want, whenever you want:
+
+- **Save once** — take your image/video/GIF, hit *Extract*, and it becomes a
+  small file on disk. No need to keep the original clip around or load it
+  again.
+- **Reuse anytime** — load the mod in one node, like picking a LoRA. Adjust
+  how strong it is with a simple number (strength), or blend a few mods
+  together (face + style + outfit, etc.).
+- **No more heavy reference loading** — you can leave the H3 reference input
+  **empty** and inject the mod through the conditioning instead. Faster
+  generation, and the reference only affects what you want it to affect.
+- **No training needed** — this is not a LoRA you train for hours; you just
+  encode your reference and save it.
+
+Scroll down to the **Examples (screenshots)** section to see the nodes in
+action.
+
 No-training **reference mods** for MiniMax H3 — the "fast LoRA" feel of H3's
 ref2video multimodal input, without the heavy cost of injecting full videos or
 training the model.
