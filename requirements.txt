@@ -1,0 +1,11 @@
+# Hard dependencies (ComfyUI Manager installs these automatically).
+# torch is provided by ComfyUI itself, listed here for completeness.
+torch
+safetensors
+numpy
+Pillow
+
+# Optional video loader backends (soft-imported in common.py). Install one if
+# the Load H3 RefMod Folder node can't read your video files.
+# opencv-python
+# imageio

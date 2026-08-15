@@ -14,6 +14,29 @@ It appears as `vanellope_example` in the `Load H3 RefMods` dropdown after
 install — plug it into `Apply H3 RefMod (Cond)` at strength 1.0 and prompt for
 a candy racer in a karting scene.
 
+## Install
+
+1. **ComfyUI-MiniMaxH3** (required for the `av_encoder` input on Extract and
+   the `Apply H3 RefMod` pack-conditioning node): ComfyUI Manager → search
+   "MiniMax H3" → install, or clone into `custom_nodes/`:
+
+   ```bash
+   git clone https://github.com/kijai/ComfyUI-MiniMaxH3 custom_nodes/ComfyUI-MiniMaxH3
+   ```
+
+   Everything else (Extract with a plain `vae`, both loaders, the folder
+   loader, and `Apply H3 RefMod (Cond)`) works without it. If it's missing,
+   you get a one-line warning at startup and a clear error if you try to use
+   `av_encoder`.
+2. **This pack**: clone into `custom_nodes/` and restart ComfyUI. Python
+   deps (`safetensors`, `numpy`, `Pillow`) are in `requirements.txt` and are
+   installed automatically by ComfyUI Manager (or `pip install -r
+   requirements.txt` manually). `opencv-python`/`imageio` are optional video
+   backends for the folder loader.
+
+Tested on Windows; `os.path`-based paths so it should work on Linux/Mac, but
+only Windows has been exercised so far.
+
 ## The idea
 
 H3's reference path works by injecting *reference tokens* into the packed
@@ -243,3 +266,7 @@ the pack (in `custom_nodes/ComfyUI-MiniMaxH3Mod/mods/` or with a sidecar
   reference.
 - Old pooled mods (your `tf2`, `shakycam`, `minemovie`, `VANELLOPE`) still
   load fine; re-extract them in `full` mode for identity.
+
+## License
+
+[MIT](LICENSE) — © 2026 Luisa (luisacaotica).
