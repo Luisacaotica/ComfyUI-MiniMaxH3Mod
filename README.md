@@ -41,18 +41,19 @@ a candy racer in a karting scene.
 
 ## Install
 
-1. **ComfyUI-MiniMaxH3** (required for the `av_encoder` input on Extract and
-   the `Apply H3 RefMod` pack-conditioning node): ComfyUI Manager → search
-   "MiniMax H3" → install, or clone into `custom_nodes/`:
+1. **(Optional support) ComfyUI-MiniMaxH3** — this pack is **totally
+   optional**, purely a convenience: it only enables the `av_encoder` input
+   on Extract (encoder already loaded by the pack, instead of encoding the
+   video twice) and the pack-conditioning `Apply H3 RefMod` node. Everything
+   else — Extract with a plain `vae`, both loaders, the folder loader, and
+   `Apply H3 RefMod (Cond)` — works without it, so you can skip this step
+   entirely. If it's missing you just get a one-line warning at startup and a
+   clear error only if you actually use `av_encoder`. To install it anyway:
+   ComfyUI Manager → search "MiniMax H3", or clone into `custom_nodes/`:
 
    ```bash
    git clone https://github.com/xiaolibai-sys/ComfyUI-MiniMaxH3 custom_nodes/ComfyUI-MiniMaxH3
    ```
-
-   Everything else (Extract with a plain `vae`, both loaders, the folder
-   loader, and `Apply H3 RefMod (Cond)`) works without it. If it's missing,
-   you get a one-line warning at startup and a clear error if you try to use
-   `av_encoder`.
 2. **This pack**: clone into `custom_nodes/` and restart ComfyUI. Python
    deps (`safetensors`, `numpy`, `Pillow`) are in `requirements.txt` and are
    installed automatically by ComfyUI Manager (or `pip install -r
