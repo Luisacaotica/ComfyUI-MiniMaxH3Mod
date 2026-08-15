@@ -1,4 +1,4 @@
-# ComfyUI-MiniMaxH3Mod
+# ComfyUI-MiniMaxH3Mod - Changing the F#cking world with cigarretes and coffe.
 
 > 🚧 **Under construction** — API and node schemas are still evolving. Mods
 > stay compatible, but expect node names/inputs to shift between versions.
@@ -50,16 +50,17 @@ a candy racer in a karting scene.
    entirely. If it's missing you just get a one-line warning at startup and a
    clear error only if you actually use `av_encoder`. To install it anyway:
    ComfyUI Manager → search "MiniMax H3", or clone into `custom_nodes/`:
-
+   
    ```bash
    git clone https://github.com/xiaolibai-sys/ComfyUI-MiniMaxH3 custom_nodes/ComfyUI-MiniMaxH3
    ```
+
 2. **This pack**: clone into `custom_nodes/` and restart ComfyUI. Python
    deps (`safetensors`, `numpy`, `Pillow`) are in `requirements.txt` and are
    installed automatically by ComfyUI Manager (or `pip install -r
    requirements.txt` manually). `opencv-python`/`imageio` are optional video
    backends for the folder loader.
-
+   
    ```bash
    git clone https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod custom_nodes/ComfyUI-MiniMaxH3Mod
    ```
@@ -80,8 +81,8 @@ A RefMod is the same reference, saved to disk so you don't re-encode it:
    the official node) and encode with the H3 VAE. The stored latent is what
    the model attends to: at 1024px short edge that's ~1000 tokens per image
    frame, at 2048px ~4000.
-2. `mode = pooled` — average-pool the latent to a small grid — 4×4 latent =
-   **4 tokens**, with a couple of latent frames for motion (default 2),
+2. `mode = pooled` — average-pool the latent to a small grid — 8×8 latent =
+   **64 tokens**, with a couple of latent frames for motion (default 2),
    optionally refined with a few gradient steps that reconstruct the full
    latent (still model-free, seconds).
 
@@ -115,9 +116,9 @@ the ref carries:
   the model was trained on full-res refs, and this is exactly what the
   official ref2video node injects (its 2048px "max" option exists
   specifically for "best identity fidelity").
-- **`mode = pooled`** stores a tiny average-pooled grid (4×4, 2 frames =
-  `24×2×4×4` ≈ 1.5 KB). Nearly free to inject, but a 4×4 latent is a
-  8×8-pixel image — it carries concept/motion (colors, general look, a
+- **`mode = pooled`** stores a tiny average-pooled grid (8×8, 2 frames =
+  `24×2×8×8` ≈ 6 KB). Nearly free to inject, but an 8×8 latent is a
+  16×16-pixel image — it carries concept/motion (colors, general look, a
   dance), not fine identity.
 
 This is why tiny mods feel weak on characters: no amount of `strength` adds
@@ -131,7 +132,7 @@ honest cost of identity.
 `pool_h` / `pool_w` on Extract is the concept ↔ identity control for pooled
 mode, and it's worth knowing before you extract:
 
-- **Small pool (4×4) = concept.** Few tokens, the mod keeps the *general
+- **Small pool (8×8) = concept.** Few tokens, the mod keeps the *general
   idea* — colors, the overall look, a dance move — and lets the model
   improvise the framing, background and subject details.
 - **Big pool (16×16) = identity.** More tokens, the mod keeps *specific
@@ -140,20 +141,20 @@ mode, and it's worth knowing before you extract:
   your data: it starts copying the composition, the objects, the people in
   your shots.
 
-So **4×4 is the sweet spot for concepts, 16×16 for identity** — the same
+So **8×8 is the sweet spot for concepts, 16×16 for identity** — the same
 rule of thumb as `full` vs `pooled` mode: more information stored in the
 latent = more identity, less = more freedom.
 
 ## Nodes (`MiniMax-H3/mod`)
 
-| Node | What it does |
-| --- | --- |
-| `Extract H3 RefMod` | two typed Autogrow inputs — **`ref_image_1`** (stills) and **`ref_video_1`** (video frames) — each grows its own next slot → full-res or pooled latent, saved as `.safetensors` |
-| `Load H3 RefMod Folder` | load every image/video in a folder as an ordered ref list → feed its `refs_bundle` into Extract for bulk extraction |
-| `Load H3 RefMods` | one node, 1-8 mod dropdowns **with a typed strength each** (LoRA-loader style); `show_info` prints each mod's layout/token budget |
-| `Load H3 RefMod Axis` | A/B mod pairs on one **signed slider** each — negative uses mod A, positive uses mod B (e.g. a young↔old age dial) |
-| `Apply H3 RefMod` | append the bundle to a `MINIMAX_H3_COND` conditioning (ComfyUI-MiniMaxH3 pack) |
-| `Apply H3 RefMod (Cond)` | same, for the built-in `CONDITIONING` type (`minimax_refs`) |
+| Node                     | What it does                                                                                                                                                                    |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Extract H3 RefMod`      | two typed Autogrow inputs — **`ref_image_1`** (stills) and **`ref_video_1`** (video frames) — each grows its own next slot → full-res or pooled latent, saved as `.safetensors` |
+| `Load H3 RefMod Folder`  | load every image/video in a folder as an ordered ref list → feed its `refs_bundle` into Extract for bulk extraction                                                             |
+| `Load H3 RefMods`        | one node, 1-8 mod dropdowns **with a typed strength each** (LoRA-loader style); `show_info` prints each mod's layout/token budget                                               |
+| `Load H3 RefMod Axis`    | A/B mod pairs on one **signed slider** each — negative uses mod A, positive uses mod B (e.g. a young↔old age dial)                                                              |
+| `Apply H3 RefMod`        | append the bundle to a `MINIMAX_H3_COND` conditioning (ComfyUI-MiniMaxH3 pack)                                                                                                  |
+| `Apply H3 RefMod (Cond)` | same, for the built-in `CONDITIONING` type (`minimax_refs`)                                                                                                                     |
 
 The old single loader, multi loader, Info, Compose and preset nodes are gone
 — one loader with per-row strengths + a `show_info` toggle replaces them all.
@@ -239,7 +240,7 @@ pointing at what you want the model to focus on:
 - extracted a ginger woman → write **"a ginger woman"**
 - extracted a handcam walk → write **"pov handcam walking"**
 - extracted a dance → write **"person dancing"**Prompt + mod together are what make the character/concept actually show up
-in the output.
+  in the output.
 
 ## Examples (screenshots)
 
