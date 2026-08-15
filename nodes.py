@@ -755,6 +755,11 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "(gradient refinement steps). Higher = more identity detail but sticks "
                             "to the refs' framing/background; lower = deviates from the refs but "
                             "loses detail. 500 is a good default; 0 = pure pooling."),
+                io.Int.Input("multiplier", default=1, min=1, max=10, step=1,
+                    tooltip="Data multiplier: repeat the extracted ref N times along time so a short "
+                            "video/GIF (few tokens) isn't drowned out by the main video's tokens. "
+                            "Each repeat duplicates the same latent frames, so attention weight on "
+                            "the ref scales roughly with N. 1 = no repeat; file size grows with N."),
                 io.Boolean.Input("save", default=True, label_on="save", label_off="don't save",
                     tooltip="Save the mod to mods/ so Load H3 RefMods can pick it up later."),
             ],
@@ -767,7 +772,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
     def execute(cls, name, mode, refs_image=None, refs_video=None, refs_bundle=None,
                 av_encoder=None, vae=None,
                 ref_resolution=1024, pool_h=16, pool_w=16, latent_frames=16,
-                identity=500, save=True, **legacy) -> io.NodeOutput:
+                identity=500, multiplier=1, save=True, **legacy) -> io.NodeOutput:
         name = _sanitize_name(name)
         # old pre-Autogrow workflows pass their widget values through as kwargs:
         # map them onto the new inputs so those saved workflows keep running.
@@ -905,6 +910,8 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                   f"identity={identity} was ignored.")
 
         latent = torch.cat(frames, dim=2)  # [1, 24, total_t, h, w]
+        if multiplier > 1:
+            latent = latent.repeat(1, 1, multiplier, 1, 1)  # data multiplier
         total_t = latent.shape[2]
         kind = "video" if total_t > 1 else "image"
         # the VAE encodes at 16x spatial scale, so a latent of 40x20 = 640x320 px
@@ -921,7 +928,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             source_shape=" +".join(source_shapes),
             pool=f"full-res {px_w}x{px_h}px (short-edge cap {ref_resolution}px)" if mode == "full" else f"{total_t}x{pool_h}x{pool_w}",
             optimize_steps=int(identity) if mode == "pooled" else 0,
-            tags=[f"{n_img} img, {n_vid} vid"],
+            tags=[f"{n_img} img, {n_vid} vid"] + ([f"x{multiplier} repeat"] if multiplier > 1 else []),
         )
 
         if save:

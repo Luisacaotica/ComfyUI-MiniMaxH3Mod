@@ -145,6 +145,17 @@ So **8×8 is the sweet spot for concepts, 16×16 for identity** — the same
 rule of thumb as `full` vs `pooled` mode: more information stored in the
 latent = more identity, less = more freedom.
 
+### Data multiplier — rescuing short refs
+
+A short video/GIF reference contributes very few tokens next to the main
+video's thousands, so it can get drowned out — especially in `pooled` mode
+where one second of footage is already compressed to a handful of frames.
+`multiplier` on Extract repeats the extracted latent N times along time
+(2-10): the model attends to the same ref data N times, so its influence
+scales roughly with N. Handy for a 2-3 frame gif of a pose or an expression
+that would otherwise be a whisper. File size grows with N, so use it
+sparingly in `full` mode.
+
 ## Nodes (`MiniMax-H3/mod`)
 
 | Node                     | What it does                                                                                                                                                                    |
@@ -349,9 +360,11 @@ python custom_nodes/ComfyUI-MiniMaxH3Mod/extract_mod.py \
 Options: `--mode full|pooled`, `--resolution` (full mode short edge),
 `--pool` (pooled mode spatial grid, even), `--latent-frames`, `--identity`
 (pooled-mode refinement steps; higher = clings to refs, lower = deviates),
-`--output`, `--max-edge`, `--device`. Run it with the same Python that runs
-ComfyUI (it imports `comfy` from the install it lives in). Video loading
-uses opencv-python if available, otherwise imageio + imageio-ffmpeg.
+`--multiplier` (repeat the ref N times along time so a short video/GIF
+isn't drowned out by the main video's tokens), `--output`, `--max-edge`,
+`--device`. Run it with the same Python that runs ComfyUI (it imports
+`comfy` from the install it lives in). Video loading uses opencv-python if
+available, otherwise imageio + imageio-ffmpeg.
 
 Output: a **single** `models/refmods/<name>.safetensors` with the metadata
 embedded in the file header — loadable by `Load H3 RefMods` and shareable on

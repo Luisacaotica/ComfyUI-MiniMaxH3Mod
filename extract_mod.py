@@ -121,6 +121,8 @@ def main():
                     help="frames kept per video ref (default 16; images use 1): pooled mode pools them, full mode samples them")
     ap.add_argument("--identity", type=int, default=500,
                     help="pooled mode: how tightly the mod clings to the reference (gradient refinement steps; default 500, 0 = pure pooling)")
+    ap.add_argument("--multiplier", type=int, default=1,
+                    help="data multiplier: repeat the extracted ref N times along time so a short video/GIF isn't drowned out by the main video's tokens (default 1 = no repeat)")
     ap.add_argument("--max-edge", type=int, default=1536,
                     help="resize source so the longest edge is <= this before encoding (default 1536)")
     ap.add_argument("--max-frames", type=int, default=60,
@@ -208,6 +210,8 @@ def main():
               f"was ignored.")
 
     latent = torch.cat(frames, dim=2)
+    if args.multiplier > 1:
+        latent = latent.repeat(1, 1, args.multiplier, 1, 1)
     total_t = latent.shape[2]
     kind = "video" if total_t > 1 else "image"
 
@@ -227,7 +231,7 @@ def main():
         source_shape=" +".join(shapes),
         pool=f"full-res {px_w}x{px_h}px (short-edge cap {args.resolution}px)" if args.mode == "full" else f"{total_t}x{args.pool}x{pool_w}",
         optimize_steps=args.identity if args.mode == "pooled" else 0,
-        tags=[f"{n_img} img, {n_vid} vid"],
+        tags=[f"{n_img} img, {n_vid} vid"] + ([f"x{args.multiplier} repeat"] if args.multiplier > 1 else []),
     )
     path = mod.save(os.path.join(out_dir, name))
     mb = latent.numel() * latent.element_size() / 1024 / 1024
