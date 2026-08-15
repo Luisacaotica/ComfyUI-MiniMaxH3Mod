@@ -3,6 +3,8 @@
 > 🚧 **Under construction** — API and node schemas are still evolving. Mods
 > stay compatible, but expect node names/inputs to shift between versions.
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
+
 ## TL;DR (for the busy / new to this)
 
 In MiniMax H3 you can give the AI a **reference** — an image, a video, even a
