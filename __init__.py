@@ -38,7 +38,7 @@ if not H3_PACK_AVAILABLE:
     print(
         "[MiniMaxH3Mod] ComfyUI-MiniMaxH3 pack not found — install it first "
         "(ComfyUI Manager: search 'MiniMax H3', or git clone "
-        "https://github.com/kijai/ComfyUI-MiniMaxH3 into custom_nodes/). "
+        "https://github.com/xiaolibai-sys/ComfyUI-MiniMaxH3 into custom_nodes/). "
         "Required only for the av_encoder input on Extract H3 RefMod and the "
         "pack-conditioning Apply H3 RefMod node; the rest works without it."
     )

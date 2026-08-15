@@ -98,7 +98,7 @@ def _h3_pack_submodule(subpath: str):
         raise RuntimeError(
             "ComfyUI-MiniMaxH3 pack not found at " + pack_dir + ". "
             "Install it first (ComfyUI Manager: search 'MiniMax H3', or git "
-            "clone https://github.com/kijai/ComfyUI-MiniMaxH3 into "
+            "clone https://github.com/xiaolibai-sys/ComfyUI-MiniMaxH3 into "
             "custom_nodes/) — it is required for the av_encoder input on "
             "Extract H3 RefMod and the pack-conditioning Apply H3 RefMod node."
         )

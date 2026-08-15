@@ -46,7 +46,7 @@ a candy racer in a karting scene.
    "MiniMax H3" → install, or clone into `custom_nodes/`:
 
    ```bash
-   git clone https://github.com/kijai/ComfyUI-MiniMaxH3 custom_nodes/ComfyUI-MiniMaxH3
+   git clone https://github.com/xiaolibai-sys/ComfyUI-MiniMaxH3 custom_nodes/ComfyUI-MiniMaxH3
    ```
 
    Everything else (Extract with a plain `vae`, both loaders, the folder
@@ -58,6 +58,10 @@ a candy racer in a karting scene.
    installed automatically by ComfyUI Manager (or `pip install -r
    requirements.txt` manually). `opencv-python`/`imageio` are optional video
    backends for the folder loader.
+
+   ```bash
+   git clone https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod custom_nodes/ComfyUI-MiniMaxH3Mod
+   ```
 
 Tested on Windows; `os.path`-based paths so it should work on Linux/Mac, but
 only Windows has been exercised so far.
