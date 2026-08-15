@@ -176,6 +176,31 @@ Works with `MiniMaxH3Conditioning`, `MiniMaxH3ReferenceToVideo`, and any
 conditioning that carries refs/keyframes — the mod ref blocks are appended
 to the existing ones.
 
+## Examples (screenshots)
+
+Real graphs from development, straight from the ComfyUI canvas.
+
+### Extracting
+
+An image and a video ref being extracted and fed into a conditioning node:
+
+![Extract H3 RefMod in use](examples/Extracting_example.png)
+
+### Loading mods
+
+`Load H3 RefMods` with several mods stacked (LoRA-loader style, one
+strength per row):
+
+![Load H3 RefMods in use](examples/loading_ref_example.png)
+
+### Loading a ref folder
+
+`Load H3 RefMod Folder` pointed at an absolute path (a whole movie
+dataset) — images + videos loaded in one shot, with the count shown in
+the preview text:
+
+![Load H3 RefMod Folder in use](examples/load_ref_folder_example.png)
+
 ### Bulk folder loading
 
 `Load H3 RefMod Folder` reads every image (png/jpg/webp/bmp/gif) and video
