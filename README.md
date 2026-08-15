@@ -267,6 +267,14 @@ the preview text:
 
 ![Load H3 RefMod Folder in use](examples/load_ref_folder_example.png)
 
+### Concept vs identity (pool size in action)
+
+The two pooled pools compared — 8×8 concept vs 16×16 identity:
+
+![Concept pool 8x8 — with and without the mod](examples/concept_example_with_without_comparission.gif)
+
+![Identity pool 16x16](examples/id_example.gif)
+
 ### Bulk folder loading
 
 `Load H3 RefMod Folder` reads every image (png/jpg/webp/bmp/gif) and video
