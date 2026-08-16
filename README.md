@@ -345,6 +345,12 @@ The two training-mode pools compared — 8×8 concept vs 16×16 identity:
 
 ![Identity pool 16x16](examples/id_example.gif)
 
+An identity success from real use — the author's own face extracted as a
+mod and prompted as **"ginger woman"**, and a third example pushed into
+JoJo Bizarre-style rendering:
+
+![Identity success — ginger woman / JoJo style](examples/id_sucess.gif)
+
 ### Known limitations
 
 Fast, high-speed motion is the hard case. A quick sequence — Sasuke doing
