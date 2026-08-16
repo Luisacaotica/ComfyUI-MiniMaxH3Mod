@@ -341,6 +341,21 @@ The two training-mode pools compared — 8×8 concept vs 16×16 identity:
 
 ![Identity pool 16x16](examples/id_example.gif)
 
+### Known limitations
+
+Fast, high-speed motion is the hard case. A quick sequence — Sasuke doing
+hand signs, a fight flurry, a rapid dance step — gets smeared into
+something slower and softer, because the reference is compressed into a
+handful of latent frames and the model fills the gaps with its own idea of
+how motion looks:
+
+![Fast motion gets smeared](examples/know_issues_1.gif)
+
+Things that help today: extract only the *moments* that matter (trim the
+clip to the actual hand-sign burst instead of the whole scene), use more
+`latent_frames` / a higher `ref_resolution`, and describe the motion in
+the prompt so the model has an anchor for what it's seeing.
+
 ### Bulk folder loading
 
 `Load H3 RefMod Folder` reads every image (png/jpg/webp/bmp/gif) and video
