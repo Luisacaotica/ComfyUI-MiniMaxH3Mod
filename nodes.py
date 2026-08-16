@@ -18,13 +18,12 @@ blocks (the mod latents) to the conditioning's ``refs``, and the DiT attends
 to those tokens through all of its blocks, exactly like a full image/video
 reference but at a fraction of the token budget.
 
-Reference strength uses the model's own conditioning-strength mechanism:
-weakening a ref mixes its latent toward noise (``visual_cond_noise_aug``
-semantics) instead of scaling values toward zero, which pushed latents out of
-distribution and read as grey output.  ``retention`` on the Apply nodes is a
-preset master strength (fully_preserved / partially_preserved /
-attribute_transfer / weak_reference) multiplied with each loader row's
-strength.
+Reference strength uses the model's own conditioning-strength dial, but
+weakening a ref mixes its latent toward a heavily blurred copy of itself
+(not toward noise or toward zero — see core.py's ``_blur_latent``/
+``ref_block`` for why). ``retention`` on the Apply nodes is a preset master
+strength (fully_preserved / partially_preserved / attribute_transfer /
+weak_reference) multiplied with each loader row's strength.
 """
 
 from __future__ import annotations
@@ -37,6 +36,7 @@ from dataclasses import replace
 from typing import Dict, List
 
 import torch
+import torch.nn.functional as F
 
 import comfy.utils
 import folder_paths
@@ -49,7 +49,10 @@ from .common import (
     refmods_dir,
 )
 from .core import (
+    CONCEPT_TYPES,
     H3RefMod,
+    aspect_grid,
+    normalize_mode,
     optimize_latent,
     pool_latent,
     read_refmod_meta,
@@ -58,6 +61,9 @@ from .core import (
 _PACK_DIR = os.path.dirname(os.path.abspath(__file__))
 LEGACY_MODS_DIR = os.path.join(_PACK_DIR, "mods")  # pre-models/refmods storage, still read
 _MOD_CACHE: Dict[str, H3RefMod] = {}
+_MOD_CACHE_MAX = 24          # cap: never pin more mods in RAM than this (FIFO eviction)
+_MOD_LIST_CACHE_KEY = None   # (dirs, mtimes, sizes) signature of the last _list_mod_names() scan
+_MOD_LIST_CACHE_VAL = None
 
 # Mod storage lives in ComfyUI's models/ tree (created on first run) and is
 # registered as a first-class folder type so it shows up next to loras/unet.
@@ -145,7 +151,27 @@ def _list_mod_names() -> List[str]:
     Only entries with valid RefMod metadata (embedded in the safetensors header
     or a legacy sidecar .json) are listed, so other mod formats in
     models/mods/ (e.g. LTXMod files) don't show up.
+
+    Called by INPUT_TYPES/VALIDATE_INPUTS on every prompt validation, so the
+    result is cached until any mod file appears/disappears/changes (checked
+    via cheap os.stat, not by re-reading every safetensors header).
     """
+    global _MOD_LIST_CACHE_KEY, _MOD_LIST_CACHE_VAL
+    sig = []
+    for d in _mod_search_dirs():
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".safetensors"):
+                continue
+            try:
+                st = os.stat(os.path.join(d, fn))
+                sig.append(f"{fn}:{st.st_size}:{int(st.st_mtime)}")
+            except OSError:
+                pass
+    key = "\n".join(sig)
+    if key == _MOD_LIST_CACHE_KEY:
+        return _MOD_LIST_CACHE_VAL
     names = set()
     for d in _mod_search_dirs():
         if not os.path.isdir(d):
@@ -157,7 +183,8 @@ def _list_mod_names() -> List[str]:
             meta = read_refmod_meta(os.path.join(d, stem))
             if meta is not None and meta.get("kind") in ("image", "video"):
                 names.add(stem)
-    return sorted(names)
+    _MOD_LIST_CACHE_KEY, _MOD_LIST_CACHE_VAL = key, sorted(names)
+    return _MOD_LIST_CACHE_VAL
 
 
 def _find_mod_path(name: str) -> str:
@@ -175,6 +202,10 @@ def _load_mod(name: str) -> H3RefMod:
         return _MOD_CACHE[name]
     mod = H3RefMod.load(_find_mod_path(name), device="cpu")
     _MOD_CACHE[name] = mod
+    if len(_MOD_CACHE) > _MOD_CACHE_MAX:
+        # FIFO eviction: pop the oldest-loaded mod so a long session loading
+        # many different mods doesn't accumulate every one of them in RAM
+        _MOD_CACHE.pop(next(iter(_MOD_CACHE)))
     return mod
 
 
@@ -241,9 +272,10 @@ def _ensure_min_size(image, floor: int = 320):
     reference smaller than the tile size in one dimension can make the tiler
     compute a zero-size edge tile, which crashes deep inside conv_in with a
     cryptic 'Expected 4D or 5D... but got [1,3,1,0,W]' error. This applies
-    regardless of extraction mode ('full' already resizes down to
-    ref_resolution but never guarantees a floor; 'pooled' never resizes at
-    all), so it's a separate, unconditional safety net right before encode.
+    regardless of extraction mode ('encode' already resizes down to
+    ref_resolution but never guarantees a floor; 'training' now resizes to
+    the same cap, also without a floor), so it's a separate, unconditional
+    safety net right before encode.
     """
     import comfy.utils
     h, w = image.shape[1], image.shape[2]
@@ -255,6 +287,76 @@ def _ensure_min_size(image, floor: int = 320):
     samples = image[..., :3].movedim(-1, 1)
     samples = comfy.utils.common_upscale(samples, tw, th, "lanczos", "disabled")
     return samples.movedim(1, -1)
+
+
+def _normalize_mask_batch(mask, label: str = "mask") -> torch.Tensor:
+    """Canonicalize a MASK input to ``[N, H, W]`` float32 in [0, 1]."""
+    if mask is None:
+        return None
+    if not isinstance(mask, torch.Tensor):
+        raise ValueError(f"MiniMaxH3RefModExtract: {label} must be a MASK tensor, "
+                          f"got {type(mask)}")
+    if mask.dim() == 2:  # [H, W]
+        mask = mask.unsqueeze(0)
+    if mask.dim() != 3:
+        raise ValueError(f"MiniMaxH3RefModExtract: {label} has unexpected shape "
+                          f"{tuple(mask.shape)} (expected [H,W] or [N,H,W])")
+    return mask.float().clamp(0.0, 1.0)
+
+
+def _resize_mask(mask: torch.Tensor, target_h: int, target_w: int) -> torch.Tensor:
+    """Resize a ``[T, H, W]`` mask to ``target_h x target_w`` (bilinear)."""
+    samples = mask.unsqueeze(1)  # [T, 1, H, W]
+    samples = comfy.utils.common_upscale(samples, target_w, target_h, "bilinear", "disabled")
+    return samples.squeeze(1).clamp(0.0, 1.0)
+
+
+def _blur_latent(z: torch.Tensor, factor: int = 8) -> torch.Tensor:
+    """Heavy spatial low-pass: downsample then upsample back.
+
+    Used as the suppression target instead of random noise. A VAE latent's
+    channels are correlated (it's not iid per-pixel noise in this space), so
+    feeding the model raw torch.randn() as a "suppressed" reference isn't
+    read as absence — it's read as real, garbled content, and gets rendered
+    as an actual (wrong) texture: the woven/static pattern is what
+    out-of-distribution noise looks like once a diffusion model tries to
+    make sense of it as a reference. A blurred copy of the real latent stays
+    on the manifold (smooth, plausible) while discarding the specific
+    structure (a skyline, a treeline) that was dictating unwanted content.
+    """
+    t, h, w = z.shape[2], z.shape[3], z.shape[4]
+    sh, sw = max(1, h // factor), max(1, w // factor)
+    down = F.adaptive_avg_pool3d(z.float(), (t, sh, sw))
+    up = F.interpolate(down, size=(t, h, w), mode="trilinear", align_corners=False)
+    return up
+
+
+def _mask_latent(z: torch.Tensor, mask_px: torch.Tensor, background_retention: float,
+                  seed_key: str) -> torch.Tensor:
+    """Suppress the latent outside ``mask_px`` toward a blurred copy of itself, per cell.
+
+    ``mask_px`` is pixel-space (already resized/cropped to match the encoded
+    source), 1 = keep, 0 = suppress; ``background_retention`` sets the floor
+    weight for suppressed regions (0 = fully blurred there, 1 = no
+    suppression at all). ``seed_key`` is unused now (kept for call-site
+    compatibility) — the suppression target is deterministic, not random.
+
+    ``z``: ``[1, 24, T, H, W]`` VAE latent. Downsamples ``mask_px`` to the
+    latent's ``H x W`` via average pooling (soft edges instead of a hard cut,
+    since the DiT patchifies in 2x2 cells anyway).
+    """
+    t, h, w = z.shape[2], z.shape[3], z.shape[4]
+    mp = mask_px.unsqueeze(1)  # [T_src, 1, H, W]
+    if mp.shape[0] == 1 and t > 1:
+        mp = mp.expand(t, -1, -1, -1)
+    elif mp.shape[0] != t:
+        idx = torch.linspace(0, mp.shape[0] - 1, t).round().long()
+        mp = mp[idx]
+    mp = F.adaptive_avg_pool2d(mp.float(), (h, w))          # [T, 1, h, w]
+    mp = mp.permute(1, 0, 2, 3).unsqueeze(0).clamp(0.0, 1.0)  # [1, 1, T, h, w]
+    weight = background_retention + (1.0 - background_retention) * mp
+    blurred = _blur_latent(z)
+    return (weight * z.float() + (1.0 - weight) * blurred).to(z.dtype)
 
 
 def _normalize_ref(src, label: str = "reference") -> torch.Tensor:
@@ -324,11 +426,12 @@ def _summarize(mod: H3RefMod) -> str:
 
 def _info_lines(mod: H3RefMod) -> List[str]:
     opt = mod.optimize_steps
-    if mod.mode == "full":
-        opt = f"n/a ({mod.optimize_steps} — full mode stores the actual encode)"
+    if mod.mode == "encode":
+        opt = f"n/a ({mod.optimize_steps} — encode mode stores the actual encode)"
     return [
         "=" * 52,
         f"  MiniMax H3 RefMod: {mod.name}",
+        f"  {'concept_type':<18} {mod.concept_type}",
         f"  {'mode':<18} {mod.mode}",
         f"  {'kind':<18} {mod.kind}",
         f"  {'latent':<18} {tuple(mod.latent.shape)}",
@@ -337,6 +440,7 @@ def _info_lines(mod: H3RefMod) -> List[str]:
         f"  {'pool':<18} {mod.pool}",
         f"  {'identity':<18} {opt}",
         f"  {'tags':<18} {', '.join(mod.tags) if mod.tags else '-'}",
+        f"  {'description':<18} {mod.description or '-'}",
         "=" * 52,
     ]
 
@@ -362,6 +466,22 @@ def _ref_blocks(mods, retention) -> List[Dict]:
     return blocks
 
 
+def _prompt_hint(loads) -> str:
+    """Merge loaded mods' concept_type + description into one prompt-ready string.
+
+    e.g. "identity: ginger woman, tattooed neck, black lipstick; pose_motion:
+    slow twirl into camera, hair whipping". Concat this onto your positive
+    prompt (a string-concat node ahead of CLIP Text Encode) instead of
+    retyping each mod's description by hand. Mods with no description are
+    skipped — a bare concept_type with nothing to say isn't a useful clue.
+    """
+    parts = []
+    for mod, _strength in loads:
+        if mod.description:
+            parts.append(f"{mod.concept_type}: {mod.description}")
+    return "; ".join(parts)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Node: MiniMaxH3RefModsLoader
 # ═══════════════════════════════════════════════════════════════════════════
@@ -384,13 +504,13 @@ class MiniMaxH3RefModsLoader:
             required[f"strength_{i}"] = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0,
                 "step": 0.01, "display": "number",
                 "tooltip": "How strongly this mod's reference is preserved. 1.0 = full ref (official "
-                           "behavior). Lower values mix the ref toward noise — the model's own "
-                           "conditioning-strength mechanism — so identity fades smoothly instead of "
-                           "greying. 0 skips the mod entirely."})
+                           "behavior). Lower values blur the ref toward a softened copy of itself — "
+                           "identity fades smoothly and stays plausible instead of turning into "
+                           "static/noise texture. 0 skips the mod entirely."})
         return {"required": required}
 
-    RETURN_TYPES = ("H3_REF_MODS",)
-    RETURN_NAMES = ("mods",)
+    RETURN_TYPES = ("H3_REF_MODS", "STRING")
+    RETURN_NAMES = ("mods", "prompt_hint")
     FUNCTION = "load"
     CATEGORY = "MiniMax-H3/mod"
 
@@ -423,7 +543,10 @@ class MiniMaxH3RefModsLoader:
             for mod, strength in loads:
                 print("\n".join(_info_lines(mod)))
                 print(f"  {'strength':<18} {strength:.2f}")
-        return (loads,)
+        hint = _prompt_hint(loads)
+        if hint:
+            print(f"[MiniMaxH3RefModsLoader] prompt_hint: {hint}")
+        return (loads, hint)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -461,8 +584,8 @@ class MiniMaxH3RefModsAxis:
                            "Load H3 RefMods), so -0.5 injects mod_a at half strength."})
         return {"required": required}
 
-    RETURN_TYPES = ("H3_REF_MODS",)
-    RETURN_NAMES = ("mods",)
+    RETURN_TYPES = ("H3_REF_MODS", "STRING")
+    RETURN_NAMES = ("mods", "prompt_hint")
     FUNCTION = "load"
     CATEGORY = "MiniMax-H3/mod"
 
@@ -498,7 +621,10 @@ class MiniMaxH3RefModsAxis:
             for mod, strength in loads:
                 print("\n".join(_info_lines(mod)))
                 print(f"  {'strength':<18} {strength:.2f}")
-        return (loads,)
+        hint = _prompt_hint(loads)
+        if hint:
+            print(f"[MiniMaxH3RefModsAxis] prompt_hint: {hint}")
+        return (loads, hint)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -615,7 +741,15 @@ class MiniMaxH3RefModFolderLoader:
                     "tooltip": "Max media files loaded (images first, then videos, by filename)."}),
                 "max_frames": ("INT", {"default": 240, "min": 2, "max": 4800, "step": 1,
                     "display": "number",
-                    "tooltip": "Video frames kept (uniformly sampled; 240 = ~10s at 24fps)."}),
+                    "tooltip": "Video frames kept (uniformly sampled during decode, so a long video "
+                               "is never fully decoded into RAM — memory stays bounded by this cap "
+                               "x max_edge resolution). 240 = ~10s at 24fps."}),
+                "max_edge": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 64,
+                    "display": "number",
+                    "tooltip": "Longest edge in px for loaded images/videos (downscale only, never "
+                               "upscale). Loading many 4K files at native resolution is what OOMs "
+                               "ComfyUI — the Extract node resizes to ref_resolution anyway, so "
+                               "1024-1280 is plenty for folder extraction."}),
             },
         }
 
@@ -633,7 +767,7 @@ class MiniMaxH3RefModFolderLoader:
         return True
 
     @classmethod
-    def IS_CHANGED(cls, folder, max_items=32, max_frames=240):
+    def IS_CHANGED(cls, folder, max_items=32, max_frames=240, max_edge=1024):
         try:
             images, videos = list_media_files(_resolve_folder(folder))
             parts = []
@@ -647,19 +781,29 @@ class MiniMaxH3RefModFolderLoader:
         except Exception:
             return ""
 
-    def load(self, folder, max_items=32, max_frames=240):
+    def load(self, folder, max_items=32, max_frames=240, max_edge=1024):
         folder = _resolve_folder(folder)
         images, videos = list_media_files(folder)
         items = (images + videos)[:max_items]
+        total = len(items)
         refs, failed = [], []
-        for p in items:
+        pbar = comfy.utils.ProgressBar(total)
+        for i, p in enumerate(items, start=1):
+            kind = "video" if p in videos else "image"
+            print(f"[MiniMaxH3RefModFolderLoader] [{i}/{total}] loading {kind} "
+                  f"{os.path.basename(p)}")
             try:
                 if p in images:
-                    refs.append(load_image_file(p))
+                    refs.append(load_image_file(p, max_edge=max_edge))
                 else:
-                    refs.append(load_video_file(p, max_frames=max_frames))
+                    refs.append(load_video_file(p, max_frames=max_frames, max_edge=max_edge))
             except Exception as exc:
                 failed.append(f"{os.path.basename(p)} ({type(exc).__name__})")
+                pbar.update_absolute(i)
+                continue
+            print(f"[MiniMaxH3RefModFolderLoader] [{i}/{total}] {os.path.basename(p)} "
+                  f"-> {tuple(refs[-1].shape)}")
+            pbar.update_absolute(i)
         if failed:
             print(f"[MiniMaxH3RefModFolderLoader] skipped unreadable files: {', '.join(failed)}")
         if not refs:
@@ -687,16 +831,21 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
 
     Two modes:
 
-      * ``full`` (default) — each ref is resized to ``ref_resolution`` short
+      * ``encode`` (default) — each ref is resized to ``ref_resolution`` short
         edge (down only) and VAE-encoded at that resolution, exactly like the
         official ref2video node.  The mod stores the real encode, so identity
         (a face, an outfit) comes through; files are ~0.2-1 MB per frame.
-      * ``pooled`` — the latent is average-pooled to a tiny grid (4x4 = 4
-        tokens per frame).  Nearly free to inject but only carries concept /
-        motion, not fine identity.
+        (Old name: ``full``.)
+      * ``training`` — each ref is first resized to ``ref_resolution`` short
+        edge too (the latent is pooled to a tiny grid anyway, so encoding at
+        native resolution is wasted compute — this is the main speed dial for
+        training mode), then average-pooled to a tiny grid (4x4 = 4 tokens
+        per frame) and refined with gradient steps against the encode — still
+        no diffusion model.  Nearly free to inject but only carries concept /
+        motion, not fine identity.  (Old name: ``pooled``.)
 
-    ``identity`` (pooled mode only) refines the small latent with a few
-    gradient steps against the full encode — still no diffusion model.
+    ``identity`` (training mode only) is the refinement loop — the only
+    "training" in the pack.
     """
 
     @classmethod
@@ -709,19 +858,30 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 "Stills plug into ref_image_1, video frames into ref_video_1, "
                 "and the next slot of that type appears. refs are stacked into "
                 "one video-kind mod, so a multi-image moodboard keeps each ref's "
-                "own content instead of averaging away. 'pooled' mode (default) "
+                "own content instead of averaging away. 'training' mode (default) "
                 "compresses the refs to a grid and refines it — good identity at "
-                "a fraction of the tokens; 'full' stores the full-res encode "
+                "a fraction of the tokens; 'encode' stores the full-res encode "
                 "(max identity, MB-size mod)."
             ),
             category="MiniMax-H3/mod",
             inputs=[
                 io.String.Input("name", default="my_concept",
                     tooltip="Saved mod name (appears in the Load H3 RefMods dropdown after a reload)."),
-                io.Combo.Input("mode", options=["full", "pooled"], default="pooled",
-                    tooltip="'pooled' (default) = compressed grid refined by 'identity' — a good "
-                            "balance of identity vs tokens. 'full' = full-res encode (max "
-                            "identity, MB-size mod, ~1K tokens/img)."),
+                io.Combo.Input("mode", options=["training", "encode", "full", "pooled"],
+                    default="training",
+                    tooltip="'training' (default) = compressed grid refined by the 'identity' "
+                            "dial — a good balance of identity vs tokens. 'encode' = straight "
+                            "full-res VAE encode (max identity, MB-size mod, ~1K tokens/img). "
+                            "The old names 'full'/'pooled' still work (kept for saved workflows)."),
+                io.Combo.Input("concept_type", options=list(CONCEPT_TYPES), default="generic",
+                    tooltip="What this mod represents — 'identity' (a specific person/character), "
+                            "'pose_motion' (a pose/dance/gesture/camera move), 'clothing', "
+                            "'background', 'style', or 'generic'. Stored in the mod and used by "
+                            "the loaders' prompt_hint output (merges concept_type + description "
+                            "into a string you can concat onto your CLIP prompt). 'identity' in "
+                            "training mode with a small grid also triggers a warning nudging you "
+                            "toward 'encode' mode or a bigger grid — pooling is lossy in exactly "
+                            "the way that destroys facial identity."),
                 io.Autogrow.Input("refs_image", optional=True,
                     template=io.Autogrow.TemplatePrefix(
                         input=io.Image.Input("ref_image", tooltip="Reference still: one image of the "
@@ -737,18 +897,43 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 io.Custom("H3_REF_LIST").Input("refs_bundle", optional=True,
                     tooltip="All images/videos from a Load H3 RefMod Folder node, appended after "
                             "the autogrow refs (bulk extraction)."),
+                io.Mask.Input("mask", optional=True,
+                    tooltip="Subject mask (or a batch, one per reference in order: images then "
+                            "videos) marking what to keep at full weight. Everything outside the "
+                            "mask collapses toward a heavily blurred copy of itself per spatial "
+                            "cell (stays in-distribution — a flat noise-mix here decodes as a "
+                            "woven/static texture instead of 'nothing'), controlled by "
+                            "background_retention. Fixes 'encode' mode pulling in a background/style "
+                            "that doesn't belong to the subject. A single mask broadcasts to every "
+                            "reference; a batch must match the reference count."),
+                io.Float.Input("background_retention", default=0.0, min=0.0, max=1.0, step=0.05,
+                    tooltip="Only used when 'mask' is connected. Floor weight for the region "
+                            "outside the mask: 0 = that region collapses to a heavily blurred "
+                            "copy of itself (kills specific structure like a skyline/treeline "
+                            "while staying smooth and in-distribution), 1 = mask has no effect. "
+                            "Middle values (0.3-0.6) partially blur instead of fully."),
                 io.Custom("MINIMAX_H3_AV_ENCODER").Input("av_encoder", optional=True,
                     tooltip="MiniMax-H3 VAE pack output (preferred; share the pack's VAE cache)."),
                 io.Vae.Input("vae", optional=True,
                     tooltip="Standard VAE, used when av_encoder is not connected."),
                 io.Int.Input("ref_resolution", default=1024, min=256, max=2048, step=64,
-                    tooltip="Full mode: target short edge in px (downscale only, never upscale). "
-                            "2048 = official max fidelity, 4x the tokens of 1024."),
-                io.Int.Input("pool_h", default=16, min=2, max=16, step=2,
-                    tooltip="Pooled mode: spatial latent grid after pooling (even). 16x16 = 256 tokens per frame."),
-                io.Int.Input("pool_w", default=16, min=2, max=16, step=2),
+                    tooltip="Target short edge in px (downscale only, never upscale), applied to "
+                            "BOTH modes: 'encode' stores at that res, 'training' encodes smaller "
+                            "too (it pools to a grid anyway, so native-res encoding is wasted "
+                            "compute — this is the main speed dial for training mode). 1024 is a "
+                            "good default; 512 halves encode cost; 2048 = official max fidelity, "
+                            "4x the tokens of 1024."),
+                io.Int.Input("pool_h", default=16, min=2, max=64, step=2,
+                    tooltip="Pooled mode: spatial latent grid after pooling. The grid is auto-fit to "
+                            "the source's aspect ratio (long edge = max of the two dials, other edge "
+                            "derived), so a portrait person isn't squished into a square grid "
+                            "(the 'fat/chubby' distortion). Square sources keep the exact dial value. "
+                            "16x16 = 64 tokens/frame (concept sweet spot); 32x32 = 256; 64x64 = 1024, "
+                            "full-mode parity for identity."),
+                io.Int.Input("pool_w", default=16, min=2, max=64, step=2,
+                    tooltip="Pooled mode: grid width (long edge if the source is wider than tall)."),
                 io.Int.Input("latent_frames", default=16, min=1, max=16,
-                    tooltip="Frames kept per video ref: pooled mode pools them, full mode uniformly "
+                    tooltip="Frames kept per video ref: training mode pools them, encode mode uniformly "
                             "samples them (16x16x16 = 4096 tokens per video ref). Images always use 1."),
                 io.Int.Input("identity", default=500, min=0, max=2000, step=50,
                     tooltip="Pooled mode only: how tightly the mod clings to the reference "
@@ -760,20 +945,38 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "video/GIF (few tokens) isn't drowned out by the main video's tokens. "
                             "Each repeat duplicates the same latent frames, so attention weight on "
                             "the ref scales roughly with N. 1 = no repeat; file size grows with N."),
+                io.String.Input("description", default="", multiline=True,
+                    tooltip="Optional text describing the concept (e.g. 'a ginger woman with messy "
+                            "hair', 'an animation style', 'handheld camera movement'). Stored in "
+                            "the mod and printed in the info block — documentation only, no wiring."),
                 io.Boolean.Input("save", default=True, label_on="save", label_off="don't save",
                     tooltip="Save the mod to mods/ so Load H3 RefMods can pick it up later."),
             ],
-            outputs=[io.Custom("H3_REF_MODS").Output("mods",
-                tooltip="Bundle with this one mod at strength 1.0. Feed it to Apply H3 RefMod "
-                        "(or Load H3 RefMods after saving).")],
+            outputs=[
+                io.Custom("H3_REF_MODS").Output("mods",
+                    tooltip="Bundle with this one mod at strength 1.0. Feed it to Apply H3 RefMod "
+                            "(or Load H3 RefMods after saving)."),
+            ],
         )
 
     @classmethod
     def execute(cls, name, mode, refs_image=None, refs_video=None, refs_bundle=None,
                 av_encoder=None, vae=None,
                 ref_resolution=1024, pool_h=16, pool_w=16, latent_frames=16,
-                identity=500, multiplier=1, save=True, **legacy) -> io.NodeOutput:
+                identity=500, multiplier=1, description="", save=True,
+                concept_type="generic", mask=None, background_retention=0.0,
+                **legacy) -> io.NodeOutput:
         name = _sanitize_name(name)
+        mode = normalize_mode(mode)  # accept legacy 'full'/'pooled'
+        if concept_type == "identity" and mode == "training" and max(pool_h, pool_w) < 16:
+            print(
+                f"[MiniMaxH3RefModExtract] warning: concept_type='identity' with "
+                f"mode='training' at a {pool_h}x{pool_w} grid — pooling averages away "
+                f"exactly the detail that carries a face (this is almost certainly "
+                f"your 'chubby/older' drift). For a person, either switch mode='encode' "
+                f"(real identity, higher token cost) or raise pool_h/pool_w toward "
+                f"32x32+ and expect it to still be a soft approximation, not a lock."
+            )
         # old pre-Autogrow workflows pass their widget values through as kwargs:
         # map them onto the new inputs so those saved workflows keep running.
         # ``pool`` is the old height; ``pool_w`` arrives as the named param.
@@ -837,22 +1040,64 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         # Full-res refs must share one spatial canvas so the stacked latent has
         # a single H/W: anchor on the first source, cover-crop the rest to it.
         canvas = None
-        if mode == "full" and len(sources) > 1:
+        if mode == "encode" and len(sources) > 1:
             h, w = sources[0][0].shape[1], sources[0][0].shape[2]
             scale = min(1.0, ref_resolution / min(h, w))
             canvas = (max(32, round(w * scale / 32) * 32),
                       max(32, round(h * scale / 32) * 32))
+        # training mode: anchor the pool grid to the first source's aspect so
+        # a portrait person isn't squished into a square 16x16 grid (the
+        # "fat" distortion).  The VAE scales space uniformly, so pixel
+        # aspect == latent aspect.
+        pool_grid = None
+        if mode == "training":
+            h0, w0 = sources[0][0].shape[1], sources[0][0].shape[2]
+            pool_grid = aspect_grid(pool_h, pool_w, h0 / w0)
+            if pool_grid != (pool_h, pool_w):
+                print(f"[MiniMaxH3RefModExtract] pooled grid {pool_h}x{pool_w} -> "
+                      f"{pool_grid[0]}x{pool_grid[1]} to match source aspect "
+                      f"{w0}x{h0} (avoids squishing the subject wide)")
+        gh, gw = pool_grid if pool_grid is not None else (pool_h, pool_w)
+
+        mask_batch = _normalize_mask_batch(mask, label="mask")
+        if mask_batch is not None:
+            if mask_batch.shape[0] == 1 and len(sources) > 1:
+                mask_batch = mask_batch.expand(len(sources), -1, -1)
+            elif mask_batch.shape[0] != len(sources):
+                raise ValueError(
+                    f"MiniMaxH3RefModExtract: mask has {mask_batch.shape[0]} entries but "
+                    f"there are {len(sources)} references (images then videos, in order). "
+                    f"Connect one mask (broadcasts to every ref) or exactly one per ref.")
+
         frames = []
         n_img = n_vid = 0
         source_shapes = []
-        for src_idx, (src, is_video) in enumerate(sources):
-            if mode == "full":
+        n_refs = len(sources)
+        pbar = comfy.utils.ProgressBar(n_refs)
+        for src_idx in range(len(sources)):
+            src, is_video = sources[src_idx]
+            label = f"ref {src_idx + 1}/{n_refs} ({'video' if is_video else 'image'})"
+            print(f"[MiniMaxH3RefModExtract] {label}: "
+                  f"source {tuple(src.shape)}, mode={mode}"
+                  + (f", identity={identity} steps" if mode == "training" and identity > 0 else ""))
+            if mode == "encode":
                 # downscale (never upscale) to the target short edge, sample
                 # videos to latent_frames frames, then encode at full res
                 if is_video and latent_frames < src.shape[0]:
                     idx = torch.linspace(0, src.shape[0] - 1, latent_frames).round().long()
                     src = src[idx]
                 src = _resize_ref(src, ref_resolution, canvas)
+            else:
+                # training mode: encode smaller too — the latent is pooled
+                # to a tiny grid anyway, so encoding at native resolution is
+                # wasted compute. Resize preserves aspect, so the pool grid
+                # anchored on the first source's aspect still applies.
+                orig = (src.shape[1], src.shape[2])
+                src = _resize_ref(src, ref_resolution, None)
+                if (src.shape[1], src.shape[2]) != orig:
+                    print(f"[MiniMaxH3RefModExtract] {label}: resized "
+                          f"{orig[0]}x{orig[1]} -> {src.shape[1]}x{src.shape[2]} "
+                          f"(ref_resolution={ref_resolution}) before encode")
             src = _ensure_min_size(src)
             if is_video and src.shape[0] > 1:
                 valid_t = _snap_to_causal_grid(src.shape[0])
@@ -861,6 +1106,9 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                           f"(video): trimming {src.shape[0]} -> {valid_t} frames "
                           f"to match the VAE's causal 4k+1 grid.")
                     src = src[:valid_t]
+            mask_px = None
+            if mask_batch is not None:
+                mask_px = _resize_mask(mask_batch[src_idx:src_idx + 1], src.shape[1], src.shape[2])
             if src.shape[1] <= 0 or src.shape[2] <= 0:
                 raise ValueError(
                     f"MiniMaxH3RefModExtract: reference {src_idx + 1} "
@@ -891,22 +1139,41 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                     f"got {tuple(z.shape)}. The connected VAE is not the H3 VAE.")
             source_shapes.append(f"{z.shape[2]}x{z.shape[3]}x{z.shape[4]}")
 
-            if mode == "full":
+            if mask_px is not None:
+                z = _mask_latent(z, mask_px, background_retention, seed_key=f"{name}:{src_idx}")
+                print(f"[MiniMaxH3RefModExtract] {label}: applied subject mask "
+                      f"(background_retention={background_retention})")
+
+            if mode == "encode":
                 pooled = z.to(torch.float16)
             else:
                 pool_t = min(latent_frames, z.shape[2]) if is_video else 1
-                pooled = pool_latent(z, pool_t, pool_h, pool_w).to(torch.float16)
+                gh, gw = pool_grid if pool_grid is not None else (pool_h, pool_w)
+                pooled = pool_latent(z, pool_t, gh, gw).to(torch.float16)
                 if identity > 0:
-                    pooled = optimize_latent(pooled, z.float(), steps=int(identity))
+                    print(f"[MiniMaxH3RefModExtract] {label}: refining identity "
+                          f"({int(identity)} gradient steps)...")
+                    pooled = optimize_latent(pooled, z.float(), steps=int(identity),
+                                              progress_every=100)
+                    print(f"[MiniMaxH3RefModExtract] {label}: identity refinement done")
             frames.append(pooled)
             if is_video:
                 n_vid += 1
             else:
                 n_img += 1
+            pbar.update_absolute(src_idx + 1)
+            print(f"[MiniMaxH3RefModExtract] {label}: encoded "
+                  f"{tuple(pooled.shape)} ({pooled.numel() * pooled.element_size() / 1024 / 1024:.2f} MB)")
+            # drop the decoded source and the full-res latent as soon as we're
+            # done with them, so a large folder doesn't keep every source +
+            # every full encode resident while the remaining refs are encoded
+            sources[src_idx] = None
+            src = None
+            z = None
 
-        if mode == "full" and identity > 0:
+        if mode == "encode" and identity > 0:
             print(f"[MiniMaxH3RefModExtract] warning: 'identity' only applies to "
-                  f"pooled mode — full mode stores the actual encode, so "
+                  f"training mode — encode mode stores the actual encode, so "
                   f"identity={identity} was ignored.")
 
         latent = torch.cat(frames, dim=2)  # [1, 24, total_t, h, w]
@@ -926,17 +1193,25 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             mode=mode,
             source="stack" if len(frames) > 1 else ("video" if n_vid else "image"),
             source_shape=" +".join(source_shapes),
-            pool=f"full-res {px_w}x{px_h}px (short-edge cap {ref_resolution}px)" if mode == "full" else f"{total_t}x{pool_h}x{pool_w}",
-            optimize_steps=int(identity) if mode == "pooled" else 0,
-            tags=[f"{n_img} img, {n_vid} vid"] + ([f"x{multiplier} repeat"] if multiplier > 1 else []),
+            pool=f"full-res {px_w}x{px_h}px (short-edge cap {ref_resolution}px)" if mode == "encode" else f"{total_t}x{gh}x{gw}",
+            optimize_steps=int(identity) if mode == "training" else 0,
+            tags=[f"{n_img} img, {n_vid} vid"] + ([f"x{multiplier} repeat"] if multiplier > 1 else [])
+                + ([f"masked (bg_retention={background_retention})"] if mask_batch is not None else []),
+            description=(description or "").strip(),
+            concept_type=concept_type,
         )
 
         if save:
             path = mod.save(os.path.join(refmods_dir(), name))
             _MOD_CACHE[name] = mod
+            if len(_MOD_CACHE) > _MOD_CACHE_MAX:
+                _MOD_CACHE.pop(next(iter(_MOD_CACHE)))
+            _MOD_LIST_CACHE_KEY = None  # new mod -> refresh the dropdown listing
             print(f"[MiniMaxH3RefModExtract] saved {_summarize(mod)} -> {path}")
         else:
             print(f"[MiniMaxH3RefModExtract] {_summarize(mod)} (not saved)")
+        if mod.description:
+            print(f"[MiniMaxH3RefModExtract] description: {mod.description}")
         return io.NodeOutput([(mod, 1.0)])
 
 

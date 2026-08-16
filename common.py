@@ -58,20 +58,34 @@ def load_video_file(path: str, max_frames: int = 240,
                     max_edge: Optional[int] = None) -> torch.Tensor:
     """Load one video file -> [T, H, W, 3] float32 in [0, 1].
 
-    Uses opencv if available, else imageio. ``max_frames`` uniformly samples
-    the result down to a cap; ``max_edge`` optionally downscales each frame
-    (keeps long-video loading memory-bounded in the CLI).
+    Uses opencv if available, else imageio. ``max_frames`` caps how many
+    frames are ever buffered (uniformly sampled for long videos, *during*
+    decode, not after), and ``max_edge`` downscales each frame — so a folder
+    of long high-res videos stays memory-bounded instead of decoding the
+    whole thing at native resolution first and OOM-ing ComfyUI.
     """
     frames = None
     try:
         import cv2
         import numpy as np
         cap = cv2.VideoCapture(path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if total > max_frames:
+            # uniform target indices up front: skip frames while decoding so
+            # we never hold more than max_frames decoded frames at once
+            targets = set(np.linspace(0, total - 1, max_frames).round().astype(int).tolist())
+        else:
+            targets = None
         out = []
+        idx = 0
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
+            if targets is not None and idx not in targets:
+                idx += 1
+                continue
+            idx += 1
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w = frame.shape[:2]
             if max_edge is not None:
