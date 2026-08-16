@@ -168,22 +168,23 @@ use it sparingly in `encode` mode.
 
 ### Token cap — never inject 20K+ tokens by accident
 
-`max_tokens` on Extract (0 = off) hard-caps the total tokens the mod
-injects. When the stacked refs exceed it, the mod is cut in two cheap,
-loss-ordered passes: **near-duplicate latent frames are dropped first**
-(video refs are full of frames that differ only by codec noise — a dance
-loop, a static shot, a talking head — and each one still costs a token per
-spatial patch in every block), then the remaining frames are resampled to
-fit. The cap is honored after `multiplier`. It's a safety net, not a dial
-to lean on: a 1024px `encode`-mode video ref at 16 frames is already
-~23K tokens, so lower `latent_frames` / `ref_resolution` when you know the
-budget ahead of time and you won't waste encode work.
+`max_tokens` on Extract (0 = off, default **5120** — a good performance
+spot) hard-caps the total tokens the mod injects. When the stacked refs
+exceed it, the mod is cut in two cheap, loss-ordered passes:
+**near-duplicate latent frames are dropped first** (video refs are full of
+frames that differ only by codec noise — a dance loop, a static shot, a
+talking head — and each one still costs a token per spatial patch in every
+block), then the remaining frames are resampled to fit. The cap is honored
+after `multiplier`. It's a safety net, not a dial to lean on: a 1024px
+`encode`-mode video ref at 16 frames is already ~23K tokens, so lower
+`latent_frames` / `ref_resolution` when you know the budget ahead of time
+and you won't waste encode work.
 
 ## Nodes (`MiniMax-H3/mod`)
 
 | Node                     | What it does                                                                                                                                                                    |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Extract H3 RefMod`      | two typed Autogrow inputs — **`ref_image_1`** (stills) and **`ref_video_1`** (video frames) — each grows its own next slot → encode (full-res) or training (refined pool) latent, saved as `.safetensors`. Optional `max_tokens` hard-caps the injected token count (drops near-duplicate frames first, then resamples to fit) |
+| `Extract H3 RefMod`      | two typed Autogrow inputs — **`ref_image_1`** (stills) and **`ref_video_1`** (video frames) — each grows its own next slot → encode (full-res) or training (refined pool) latent, saved as `.safetensors`. `max_tokens` (default 5120) hard-caps the injected token count (drops near-duplicate frames first, then resamples to fit) |
 | `Load H3 RefMod Folder`  | load every image/video in a folder as an ordered ref list → feed its `refs_bundle` into Extract for bulk extraction                                                             |
 | `Load H3 RefMods`        | one node, 1-8 mod dropdowns **with a typed strength each** (LoRA-loader style); `show_info` prints each mod's layout/token budget                                               |
 | `Load H3 RefMod Axis`    | A/B mod pairs on one **signed slider** each — negative uses mod A, positive uses mod B (e.g. a young↔old age dial)                                                              |
@@ -237,10 +238,13 @@ needed):
   `decrease`.
 
 Each latent frame is mixed with `retention * curve(x)` (x = 0..1 across the
-frames) instead of one flat value. Defaults (`constant` + `linear` + 1.0)
-are exactly today's behavior — pick `decrease` + `ease` for a smooth fade-
-out, `increase` + `exponential` for a slow build-up, or `constant` + `bump`
-to keep the ref loud only mid-video.
+frames) instead of one flat value. Defaults are **`decrease` + `ease`** —
+the ref starts at full strength (identity locks in on the first frames)
+then fades out smoothly, which inserts a character without dragging the
+ref's background/framing into the rest of the video. For other moods pick
+`constant` + `linear` for a flat envelope (today's original behavior),
+`increase` + `exponential` for a slow build-up, or `constant` + `bump` to
+keep the ref loud only mid-video.
 
 ### Concept axes (signed A/B sliders)
 

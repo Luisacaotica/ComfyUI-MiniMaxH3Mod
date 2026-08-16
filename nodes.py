@@ -683,17 +683,18 @@ class MiniMaxH3RefModApply(io.ComfyNode):
                              "style/attributes, not identity), 0.15 = weak_reference. "
                              "0 = no reference."),
                 io.Combo.Input("curve_direction", options=list(CURVE_DIRECTIONS),
-                    default="constant",
+                    default="decrease",
                     tooltip="Where the strength envelope points over the ref's latent timeline: "
+                            "'decrease' (default) ramps curve_value -> 0 (a decrescent — lock in "
+                            "the identity early, then release the character for motion — good for "
+                            "identity insertion without dragging the ref's background in); "
                             "'constant' keeps one strength for the whole video (flat at "
                             "curve_value = 1.0, today's behavior); 'increase' ramps 0 -> "
-                            "curve_value (a crescent — reveal the character as they walk in); "
-                            "'decrease' ramps curve_value -> 0 (a decrescent — lock in the "
-                            "identity early, then release the character for motion)."),
+                            "curve_value (a crescent — reveal the character as they walk in)."),
                 io.Combo.Input("curve_shape", options=list(CURVE_SHAPES),
-                    default="linear",
-                    tooltip="How the envelope travels between its endpoints: 'linear', 'ease' "
-                            "(smoothstep), 'quadratic', 'cubic', 'exponential', 'stair' "
+                    default="ease",
+                    tooltip="How the envelope travels between its endpoints: 'ease' (smoothstep, "
+                            "default), 'linear', 'quadratic', 'cubic', 'exponential', 'stair' "
                             "(stepped), 'elastic' (overshoots), 'bump' (peak mid-video, for "
                             "one specific action), 'dip' (trough mid-video)."),
                 io.Float.Input("curve_value", default=1.0, min=0.0, max=1.0, step=0.01,
@@ -709,7 +710,7 @@ class MiniMaxH3RefModApply(io.ComfyNode):
 
     @classmethod
     def execute(cls, conditioning, mods, retention=1.0,
-                curve_direction="constant", curve_shape="linear", curve_value=1.0,
+                curve_direction="decrease", curve_shape="ease", curve_value=1.0,
                 strength_curve=None):
         # workflows saved before the curve split pass the old single preset name
         curve = strength_curve if strength_curve is not None \
@@ -965,14 +966,15 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "video/GIF (few tokens) isn't drowned out by the main video's tokens. "
                             "Each repeat duplicates the same latent frames, so attention weight on "
                             "the ref scales roughly with N. 1 = no repeat; file size grows with N."),
-                io.Int.Input("max_tokens", default=0, min=0, max=65536, step=512,
-                    tooltip="Hard cap on the total tokens the mod injects (0 = no cap). If the "
-                            "stacked refs exceed it, near-duplicate latent frames are dropped first "
-                            "(video refs are full of frames that differ only by noise — each one "
-                            "still costs a token per spatial patch in every block), then frames "
-                            "are resampled to fit. The cap is honored after the multiplier. Lower "
-                            "latent_frames/ref_resolution instead to avoid wasting encode work: "
-                            "~23K tokens = one 1024px encode-mode video ref at 16 frames."),
+                io.Int.Input("max_tokens", default=5120, min=0, max=65536, step=512,
+                    tooltip="Hard cap on the total tokens the mod injects (0 = no cap; 5120 is a good "
+                            "performance default). If the stacked refs exceed it, near-duplicate "
+                            "latent frames are dropped first (video refs are full of frames that "
+                            "differ only by noise — each one still costs a token per spatial patch "
+                            "in every block), then frames are resampled to fit. The cap is honored "
+                            "after the multiplier. Lower latent_frames/ref_resolution instead to "
+                            "avoid wasting encode work: ~23K tokens = one 1024px encode-mode video "
+                            "ref at 16 frames."),
                 io.String.Input("description", default="", multiline=True,
                     tooltip="Optional text describing the concept (e.g. 'a ginger woman with messy "
                             "hair', 'an animation style', 'handheld camera movement'). Stored in "

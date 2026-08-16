@@ -128,8 +128,8 @@ def main():
                     help="training mode: how tightly the mod clings to the reference (gradient refinement steps; default 500, 0 = pure pooling)")
     ap.add_argument("--multiplier", type=int, default=1,
                     help="data multiplier: repeat the extracted ref N times along time so a short video/GIF isn't drowned out by the main video's tokens (default 1 = no repeat)")
-    ap.add_argument("--max-tokens", type=int, default=0,
-                    help="hard cap on the total injected tokens (0 = off): drops near-duplicate latent frames first, then resamples the rest to fit")
+    ap.add_argument("--max-tokens", type=int, default=5120,
+                    help="hard cap on the total injected tokens (0 = off; default 5120): drops near-duplicate latent frames first, then resamples the rest to fit")
     ap.add_argument("--max-edge", type=int, default=1536,
                     help="resize source so the longest edge is <= this before encoding (default 1536)")
     ap.add_argument("--max-frames", type=int, default=60,
