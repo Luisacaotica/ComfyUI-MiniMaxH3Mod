@@ -166,38 +166,81 @@ influence scales roughly with N. Handy for a 2-3 frame gif of a pose or an
 expression that would otherwise be a whisper. File size grows with N, so
 use it sparingly in `encode` mode.
 
+### Token cap — never inject 20K+ tokens by accident
+
+`max_tokens` on Extract (0 = off) hard-caps the total tokens the mod
+injects. When the stacked refs exceed it, the mod is cut in two cheap,
+loss-ordered passes: **near-duplicate latent frames are dropped first**
+(video refs are full of frames that differ only by codec noise — a dance
+loop, a static shot, a talking head — and each one still costs a token per
+spatial patch in every block), then the remaining frames are resampled to
+fit. The cap is honored after `multiplier`. It's a safety net, not a dial
+to lean on: a 1024px `encode`-mode video ref at 16 frames is already
+~23K tokens, so lower `latent_frames` / `ref_resolution` when you know the
+budget ahead of time and you won't waste encode work.
+
 ## Nodes (`MiniMax-H3/mod`)
 
 | Node                     | What it does                                                                                                                                                                    |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Extract H3 RefMod`      | two typed Autogrow inputs — **`ref_image_1`** (stills) and **`ref_video_1`** (video frames) — each grows its own next slot → encode (full-res) or training (refined pool) latent, saved as `.safetensors` |
+| `Extract H3 RefMod`      | two typed Autogrow inputs — **`ref_image_1`** (stills) and **`ref_video_1`** (video frames) — each grows its own next slot → encode (full-res) or training (refined pool) latent, saved as `.safetensors`. Optional `max_tokens` hard-caps the injected token count (drops near-duplicate frames first, then resamples to fit) |
 | `Load H3 RefMod Folder`  | load every image/video in a folder as an ordered ref list → feed its `refs_bundle` into Extract for bulk extraction                                                             |
 | `Load H3 RefMods`        | one node, 1-8 mod dropdowns **with a typed strength each** (LoRA-loader style); `show_info` prints each mod's layout/token budget                                               |
 | `Load H3 RefMod Axis`    | A/B mod pairs on one **signed slider** each — negative uses mod A, positive uses mod B (e.g. a young↔old age dial)                                                              |
-| `Apply H3 RefMod`        | append the bundle to a `MINIMAX_H3_COND` conditioning (ComfyUI-MiniMaxH3 pack)                                                                                                  |
-| `Apply H3 RefMod (Cond)` | same, for the built-in `CONDITIONING` type (`minimax_refs`)                                                                                                                     |
+| `Apply H3 RefMod`        | one node for both conditioning types — appends the bundle to a `MINIMAX_H3_COND` (ComfyUI-MiniMaxH3 pack) **or** the built-in `CONDITIONING` (`minimax_refs`); a curve split into `curve_direction` (constant / increase / decrease) + `curve_shape` (linear / ease / exponential / stair / elastic / bump…) + `curve_value` fades the ref across the video timeline |
 
-The old single loader, multi loader, Info, Compose and preset nodes are gone
-— one loader with per-row strengths + a `show_info` toggle replaces them all.
+The old single loader, multi loader, Info, Compose, preset and split-Apply
+nodes are gone — one loader with per-row strengths + a `show_info` toggle and
+one Apply that accepts both conditioning types replace them. Old workflows
+saved with `Apply H3 RefMod (Cond)` auto-migrate to the merged Apply node at
+load time.
 
 ### Reference strength (the honest math)
 
-`strength` on each loader row (typed, 0-1) and `retention` on the Apply nodes
-use the model's **own conditioning-strength mechanism**: weakening a ref mixes
-its latent toward noise, exactly like the model's `visual_cond_noise_aug`
-(`aug * z + (1 - aug) * noise`). Scaling latent values toward zero instead —
-the old behavior — pushes them out of the normalized latent distribution, so
-the model read them as grey patches: output greyed while identity never
-actually faded.
+`strength` on each loader row (typed, 0-1) and `retention` on the Apply node
+weaken a ref by mixing its latent toward a heavily **blurred copy of itself**
+(`strength * z + (1 - strength) * blur(z)`). Scaling toward zero instead —
+the old behavior — pushes values out of the normalized latent distribution,
+so the model read them as grey patches: output greyed while identity never
+actually faded. Mixing toward random noise (the model's own
+`visual_cond_noise_aug`) is only a small-magnitude robustness augmentation;
+swept this far it reads as real-but-garbled content and decodes as a
+woven/static texture. A blurred copy stays smooth and in-distribution while
+still discarding the detail that makes a reference strong.
 
 - `1.0` = full reference (behaviorally the same ref the official node injects).
-- Lower values fade identity smoothly toward "the model saw a noisy ref".
+- Lower values fade identity smoothly toward "a soft, blurry version of the ref".
 - `0` = the mod is not injected at all.
-- `retention` on the Apply nodes is a typed master strength (0-1), so you
+- `retention` on the Apply node is a typed master strength (0-1), so you
   can type any value. MiniMax's retention levels map to: 1.0 =
   `fully_preserved`, 0.7 = `partially_preserved`, 0.4 = `attribute_transfer`
   (keep the style/attributes, not the identity), 0.15 = `weak_reference`,
   0 = no reference.
+
+### Ref strength over time (curve)
+
+The Apply node's curve is a per-frame envelope over the ref's latent
+timeline, split into **two plain dropdowns + one value** (no Curve widget
+needed):
+
+- `curve_direction` — where the envelope points: `constant` (one strength
+  for the whole video, today's behavior), `increase` (0 → `curve_value`, a
+  crescent: reveal the character as they walk in), `decrease`
+  (`curve_value` → 0, a decrescent: lock in the identity early, then let
+  the character move freely).
+- `curve_shape` — how the envelope travels between its endpoints: `linear`,
+  `ease` (smoothstep), `quadratic`, `cubic`, `exponential`, `stair`
+  (stepped), `elastic` (overshoots), `bump` (peak mid-video, for one
+  specific action like a glitch scene), `dip` (trough mid-video).
+- `curve_value` (0-1, default 1.0) — the non-zero endpoint ("user input"):
+  both endpoints for `constant`, the end for `increase`, the start for
+  `decrease`.
+
+Each latent frame is mixed with `retention * curve(x)` (x = 0..1 across the
+frames) instead of one flat value. Defaults (`constant` + `linear` + 1.0)
+are exactly today's behavior — pick `decrease` + `ease` for a smooth fade-
+out, `increase` + `exponential` for a slow build-up, or `constant` + `bump`
+to keep the ref loud only mid-video.
 
 ### Concept axes (signed A/B sliders)
 
@@ -233,7 +276,8 @@ same `retention` master control.
    `ref_resolution` applies to **both** modes now: training resizes to it
    before encoding (the big speed lever — 512 is plenty for a pooled grid),
    and encode stores the actual encode at it (1024 default, 2048 = 4× the
-   tokens). (`mode = full`/`pooled` still accepted.)
+   tokens). The dropdown is just `training`/`encode`; old mods saved as
+   `full`/`pooled` still load and normalize to these two.
 3. `Load H3 RefMods`: pick the mod from the dropdown and set its strength
    (new mods appear after a reload). Stack a whole character: face mod at
    1.0, a glitch/style mod at 0.4, a car/item mod at 1.0 — each row keeps

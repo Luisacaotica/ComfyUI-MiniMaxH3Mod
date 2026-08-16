@@ -33,6 +33,7 @@ model's own cross-attention over the compressed ref tokens does the work.
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -223,6 +224,200 @@ def optimize_latent(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Per-frame strength curve
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Direction is where the envelope points (its endpoints); shape is how it
+# travels between them; value is the non-zero endpoint ("user input").
+CURVE_DIRECTIONS = ("constant", "increase", "decrease")
+CURVE_SHAPES = ("linear", "ease", "quadratic", "cubic", "exponential",
+                "stair", "elastic", "bump", "dip")
+
+# old single-combo preset names -> (direction, shape, value) so workflows
+# saved before the curve was split still resolve
+_LEGACY_CURVES = {
+    "flat": ("constant", "linear", 1.0),
+    "fade_in": ("increase", "linear", 1.0),
+    "fade_out": ("decrease", "linear", 1.0),
+    "bump": ("increase", "bump", 1.0),
+    "dip": ("constant", "dip", 1.0),
+}
+
+
+def _ease(shape: str, x: float) -> float:
+    """Shape a progress ``x`` in [0, 1] per the easing name (may overshoot)."""
+    if shape == "linear":
+        return x
+    if shape == "ease":  # smoothstep
+        return x * x * (3.0 - 2.0 * x)
+    if shape == "quadratic":
+        return x * x
+    if shape == "cubic":
+        return x * x * x
+    if shape == "exponential":
+        return 2.0 ** x - 1.0
+    if shape == "stair":
+        return min(1.0, math.floor(x * 4) / 3.0)
+    if shape == "elastic":
+        if x <= 0.0:
+            return 0.0
+        if x >= 1.0:
+            return 1.0
+        return 2.0 ** (-10.0 * x) * math.sin((x * 10.0 - 0.75) * (2.0 * math.pi / 3.0)) + 1.0
+    if shape == "bump":
+        return 1.0 - abs(2.0 * x - 1.0)
+    if shape == "dip":
+        return abs(2.0 * x - 1.0)
+    return x
+
+
+def curve_strengths(spec, t: int) -> Optional[List[float]]:
+    """Resolve a curve spec to ``t`` per-frame strength multipliers in [0, 1].
+
+    Kept as plain Python so the Apply node exposes the curve as normal
+    combo/float widgets instead of depending on ComfyUI's new Curve widget.
+    Accepts:
+
+      * a ``(direction, shape, value)`` tuple — direction is ``constant``
+        (one strength everywhere), ``increase`` (0 -> value, a crescent) or
+        ``decrease`` (value -> 0, a decrescent); shape is how the envelope
+        travels between its endpoints (see ``_ease``); value is the non-zero
+        endpoint (1.0 = full strength there);
+      * a legacy preset name (``flat``/``fade_in``/``fade_out``/``bump``/
+        ``dip``) from before the split;
+      * a list of per-frame floats (len == t), used as-is;
+      * a list of ``(x, y)`` control points (x in [0, 1]), linearly
+        interpolated across the frames;
+      * any object with ``interp(x) -> float`` (legacy CurveInput saved in an
+        old workflow).
+
+    Returns None for flat/no curve so the caller keeps its single-strength
+    path unchanged (a ``constant`` curve at value 1.0 included).
+    """
+    if t <= 1 or spec is None or spec == "":
+        return None
+    if isinstance(spec, str):
+        legacy = _LEGACY_CURVES.get(spec)
+        return curve_strengths(legacy, t) if legacy is not None else None
+    if (isinstance(spec, tuple) and len(spec) == 3
+            and isinstance(spec[0], str) and isinstance(spec[1], str)):
+        direction, shape, value = spec
+        value = float(value)
+        if direction == "constant":
+            # linear = flat at ``value`` (1.0 == no curve); the other shapes
+            # modulate around the constant, so constant + dip is a trough,
+            # constant + bump is a peak (both endpoints equal)
+            if shape == "linear":
+                return None if value >= 1.0 else [value] * t
+            p = [_ease(shape, i / (t - 1)) for i in range(t)]
+            return [max(0.0, min(1.0, value * y)) for y in p]
+        p = [_ease(shape, i / (t - 1)) for i in range(t)]
+        if direction == "increase":
+            return [max(0.0, min(1.0, value * y)) for y in p]
+        if direction == "decrease":
+            return [max(0.0, min(1.0, value * (1.0 - y))) for y in p]
+        return None  # unknown direction: treat as flat
+    if isinstance(spec, (list, tuple)):
+        if len(spec) == t and all(isinstance(v, (int, float)) for v in spec):
+            return [float(v) for v in spec]
+        pts = [(float(x), float(y)) for x, y in spec
+               if isinstance(x, (int, float)) and isinstance(y, (int, float))]
+        if pts:
+            pts = sorted(pts, key=lambda p: p[0])
+            out = []
+            for i in range(t):
+                x = i * (1.0 / (t - 1))
+                if x <= pts[0][0]:
+                    out.append(pts[0][1])
+                elif x >= pts[-1][0]:
+                    out.append(pts[-1][1])
+                else:
+                    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+                        if x0 <= x <= x1:
+                            out.append(y0 + (y1 - y0) * (x - x0) / (x1 - x0))
+                            break
+            return out
+    interp = getattr(spec, "interp", None)
+    if callable(interp):
+        return [float(interp(i / (t - 1))) for i in range(t)]
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Token budget cap (shared by the Extract node and extract_mod.py)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def dedup_frame_indices(z: torch.Tensor, threshold: float = 0.02) -> List[int]:
+    """Indices of latent frames kept by greedy temporal dedup.
+
+    Each frame is compared to the last *kept* frame: if the mean-abs
+    difference between them, normalized by the frames' own magnitude, is
+    below ``threshold`` the frame is dropped as a (near-)duplicate.  Video
+    refs (a dance loop, a static shot, a talking head) contain long runs of
+    frames that differ only by codec noise — each one still costs a token
+    per spatial patch in every DiT block, so cutting them is the cheapest
+    way to honor a token cap.  Stacked image refs survive: different
+    angles/expressions land well above the threshold.
+    """
+    t = z.shape[2]
+    if t <= 1:
+        return list(range(t))
+    flat = z[0].float()  # [24, T, H, W]
+    kept = [0]
+    prev = flat[:, 0]
+    for i in range(1, t):
+        cur = flat[:, i]
+        denom = (cur.abs().mean() + prev.abs().mean()) / 2 + 1e-6
+        diff = (cur - prev).abs().mean() / denom
+        if diff >= threshold:
+            kept.append(i)
+            prev = cur
+    return kept
+
+
+def fit_token_budget(latent: torch.Tensor, budget: int, label: str) -> torch.Tensor:
+    """Bring a stacked latent's injected token count under ``budget``.
+
+    Tokens = (H/2)*(W/2) per frame (the DiT's 2x2 patch).  When the stack
+    exceeds the budget it is cut in two cheap, loss-ordered passes:
+
+      1. temporal dedup — drop latent frames that are (near-)identical to
+         the last kept frame (free: they carry no new reference info);
+      2. budget-fit resample — uniformly subsample the remaining frames down
+         to the largest count that fits the budget.
+
+    The spatial dims are never touched: resizing a latent's H/W changes the
+    rope grid and degrades the reference, so time is the only honest lever.
+    ``label`` is the mod name for the console notes.
+    """
+    h, w = latent.shape[3], latent.shape[4]
+    per_frame = (h // 2) * (w // 2)
+    t = latent.shape[2]
+    if per_frame * t <= budget:
+        return latent
+    kept = dedup_frame_indices(latent)
+    if len(kept) < t:
+        print(f"[RefMod] {label}: over {budget}-token cap, "
+              f"dropped {t - len(kept)} near-duplicate frame(s) "
+              f"({t} -> {len(kept)})")
+        latent = latent[:, :, kept]
+        t = latent.shape[2]
+    if per_frame * t > budget:
+        fit_t = max(1, budget // per_frame)
+        if fit_t < t:
+            idx = torch.linspace(0, t - 1, fit_t).round().long()
+            latent = latent[:, :, idx]
+            print(f"[RefMod] {label}: still over {budget}-token cap, "
+                  f"resampled {t} -> {fit_t} frame(s) to fit")
+        if per_frame * latent.shape[2] > budget:
+            print(f"[RefMod] {label}: one frame alone is {per_frame} tokens > "
+                  f"{budget} — lower ref_resolution or pool_h/pool_w to meet "
+                  f"the cap.")
+    return latent
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # H3RefMod — the saved artifact
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -274,7 +469,8 @@ class H3RefMod:
 
     # ── native ref block ──────────────────────────────────────────────
 
-    def ref_block(self, strength: float = 1.0) -> Optional[Dict]:
+    def ref_block(self, strength: float = 1.0,
+                  curve=None) -> Optional[Dict]:
         """
         Build the ref block dict the model's ``PackedLayout`` / payload consumes.
 
@@ -291,11 +487,29 @@ class H3RefMod:
         on-manifold while still discarding the specific detail that makes a
         reference strong. ``strength <= 0`` drops the block entirely (no
         tokens injected).
+
+        ``curve`` (optional) is a per-frame strength spec for the ref's
+        latent timeline — a ``(direction, shape, value)`` tuple (e.g.
+        ``("decrease", "ease", 1.0)``), a legacy preset name, a list of
+        per-frame floats, ``(x, y)`` control points, or any object with
+        ``interp(x)`` (see ``curve_strengths``).  Each frame is mixed with
+        its own strength ``retention * curve(x)`` instead of one flat value,
+        so the ref can fade in/out across the video.  A flat curve is
+        identical to passing ``strength`` alone.
         """
         if strength <= 0.0:
             return None
         latent = self.latent
-        if strength < 1.0:
+        if curve is not None and self.latent_t > 1:
+            strengths = curve_strengths(curve, self.latent_t)
+            if strengths is not None:
+                t = self.latent_t
+                st = torch.tensor(
+                    [max(0.0, min(1.0, strength * s)) for s in strengths],
+                    dtype=latent.dtype, device=latent.device)
+                st = st.view(1, 1, t, 1, 1)
+                latent = st * latent + (1.0 - st) * _blur_latent(latent)
+        elif strength < 1.0:
             latent = strength * latent + (1.0 - strength) * _blur_latent(latent)
         block: Dict = {
             "kind": self.kind,

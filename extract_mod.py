@@ -61,8 +61,8 @@ if ROOT not in sys.path:
 import torch
 
 from common import load_image_file, load_video_file, refmods_dir
-from core import (CONCEPT_TYPES, H3RefMod, aspect_grid, normalize_mode,
-                  optimize_latent, pool_latent)
+from core import (CONCEPT_TYPES, H3RefMod, aspect_grid, fit_token_budget,
+                  normalize_mode, optimize_latent, pool_latent)
 
 MAX_VIDEO_FRAMES = 60  # uniform sample cap; temporal pooling averages anyway
 
@@ -128,6 +128,12 @@ def main():
                     help="training mode: how tightly the mod clings to the reference (gradient refinement steps; default 500, 0 = pure pooling)")
     ap.add_argument("--multiplier", type=int, default=1,
                     help="data multiplier: repeat the extracted ref N times along time so a short video/GIF isn't drowned out by the main video's tokens (default 1 = no repeat)")
+    ap.add_argument("--max-tokens", type=int, default=0,
+                    help="hard cap on the total injected tokens (0 = off): drops near-duplicate latent frames first, then resamples the rest to fit")
+    ap.add_argument("--max-edge", type=int, default=1536,
+                    help="resize source so the longest edge is <= this before encoding (default 1536)")
+    ap.add_argument("--max-frames", type=int, default=60,
+                    help="max video frames sampled (uniform) before encoding (default 60; lower for CPU)")
     ap.add_argument("--description", default="",
                     help="optional text describing the concept (e.g. 'a ginger woman with messy hair', "
                          "'an animation style'). Stored in the mod and emitted by the loaders so it "
@@ -136,10 +142,6 @@ def main():
                     help="what this mod represents (default: generic). 'identity' in --mode training "
                          "prints a warning: pooling is lossy in exactly the way that destroys faces — "
                          "use --mode encode for people.")
-    ap.add_argument("--max-edge", type=int, default=1536,
-                    help="resize source so the longest edge is <= this before encoding (default 1536)")
-    ap.add_argument("--max-frames", type=int, default=60,
-                    help="max video frames sampled (uniform) before encoding (default 60; lower for CPU)")
     ap.add_argument("--device", default="auto", help="auto / cuda / cpu (VAE device)")
     args = ap.parse_args()
     args.mode = normalize_mode(args.mode)  # accept legacy 'full'/'pooled'
@@ -252,11 +254,13 @@ def main():
     latent = torch.cat(frames, dim=2)
     if args.multiplier > 1:
         latent = latent.repeat(1, 1, args.multiplier, 1, 1)
+    name = args.name or (os.path.splitext(os.path.basename(args.image[0]))[0]
+                         if args.image else os.path.splitext(os.path.basename(args.video[0]))[0])
+    if args.max_tokens > 0:
+        latent = fit_token_budget(latent, args.max_tokens, name)
     total_t = latent.shape[2]
     kind = "video" if total_t > 1 else "image"
 
-    name = args.name or (os.path.splitext(os.path.basename(args.image[0]))[0]
-                         if args.image else os.path.splitext(os.path.basename(args.video[0]))[0])
     out_dir = args.output or refmods_dir()
     px_w, px_h = latent.shape[4] * 16, latent.shape[3] * 16
     mod = H3RefMod(

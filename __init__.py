@@ -14,8 +14,8 @@ Nodes
   MiniMaxH3RefModFolderLoader  — load every image/video in a folder as an ordered ref list
   MiniMaxH3RefModsLoader       — load 1-8 mods with a typed strength each (LoRA-style)
   MiniMaxH3RefModsAxis         — A/B mod pairs on one signed slider each (negative -> A, positive -> B)
-  MiniMaxH3RefModApply         — inject the bundle into MINIMAX_H3_COND (pack)
-  MiniMaxH3RefModApplyCond     — inject the bundle into CONDITIONING (built-in)
+  MiniMaxH3RefModApply         — inject the bundle into MINIMAX_H3_COND (pack) or CONDITIONING (built-in);
+                                 the old split Apply/ApplyCond merged into one node (old workflows migrate)
 
 Standalone extraction (image/video files): see extract_mod.py
 """

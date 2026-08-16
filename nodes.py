@@ -6,8 +6,9 @@ nodes.py — ComfyUI nodes for MiniMax H3 "RefMod" (no-training reference mods)
   MiniMaxH3RefModFolderLoader  — load every image/video in a folder as an ordered ref list
   MiniMaxH3RefModsLoader       — load 1-8 mods with a typed strength each (LoRA-style)
   MiniMaxH3RefModsAxis         — A/B mod pairs on one signed slider each (negative -> A, positive -> B)
-  MiniMaxH3RefModApply         — inject the bundle into a MINIMAX_H3_COND conditioning
-  MiniMaxH3RefModApplyCond     — same, for the built-in ComfyUI CONDITIONING type
+  MiniMaxH3RefModApply         — inject the bundle into a MINIMAX_H3_COND conditioning or the
+                                 built-in ComfyUI CONDITIONING (one node, old ApplyCond
+                                 workflows auto-migrate via node replacement)
 
 Mods are stored in ``models/refmods/`` (created on first run, next to loras/
 and unet/); mods saved by older versions in the pack's ``mods/`` folder still
@@ -50,8 +51,11 @@ from .common import (
 )
 from .core import (
     CONCEPT_TYPES,
+    CURVE_DIRECTIONS,
+    CURVE_SHAPES,
     H3RefMod,
     aspect_grid,
+    fit_token_budget,
     normalize_mode,
     optimize_latent,
     pool_latent,
@@ -445,13 +449,18 @@ def _info_lines(mod: H3RefMod) -> List[str]:
     ]
 
 
-def _ref_blocks(mods, retention) -> List[Dict]:
+def _ref_blocks(mods, retention, curve=None) -> List[Dict]:
     """Ref blocks for a loader bundle, scaled by row strength x retention.
 
     ``retention`` is a master strength multiplier: a float 0-1 (1.0 =
     fully_preserved, 0.7 = partially_preserved, 0.4 = attribute_transfer,
     0.15 = weak_reference), or one of those preset names for legacy
     workflows saved with the old combo widget.
+
+    ``curve`` (optional) is a per-frame strength spec — a ``(direction,
+    shape, value)`` tuple, a legacy preset name, per-frame values, control
+    points (see ``core.curve_strengths``) — applied on top of the row
+    strength.  A flat/no curve keeps today's behavior.
     """
     if isinstance(retention, str):
         factor = RETENTION.get(retention, 1.0)
@@ -460,7 +469,7 @@ def _ref_blocks(mods, retention) -> List[Dict]:
     blocks = []
     for mod, strength in mods:
         eff = min(1.0, max(0.0, strength * factor))
-        block = mod.ref_block(eff)
+        block = mod.ref_block(eff, curve=curve)
         if block is not None:
             blocks.append(block)
     return blocks
@@ -631,90 +640,96 @@ class MiniMaxH3RefModsAxis:
 # Node: MiniMaxH3RefModApply / ApplyCond
 # ═══════════════════════════════════════════════════════════════════════════
 
-class MiniMaxH3RefModApply:
+class MiniMaxH3RefModApply(io.ComfyNode):
     """
-    Inject a loader bundle of RefMods into a MiniMax-H3 conditioning.
+    Inject a loader bundle of RefMods into a MiniMax H3 conditioning.
 
-    Appends each mod's reference latent to the conditioning's ``refs``, so the
-    DiT attends to it through all blocks exactly like a reference image/video.
-    ``retention`` is a master strength over the loader's per-row strengths.
-    Works with the ComfyUI-MiniMaxH3 pack's MINIMAX_H3_COND output.
+    Accepts either the ComfyUI-MiniMaxH3 pack's MINIMAX_H3_COND or the built-in
+    ComfyUI CONDITIONING (from the core MiniMaxH3ReferenceToVideo node) and
+    returns the same type.  Appends each mod's reference latent to the
+    conditioning's ``refs`` / ``minimax_refs``, so the DiT attends to it
+    through all blocks exactly like a reference image/video.  ``retention`` is
+    a master strength over the loader's per-row strengths; the curve is split
+    into ``curve_direction`` (constant / increase / decrease), ``curve_shape``
+    (how the envelope travels between its endpoints) and ``curve_value`` (the
+    non-zero endpoint) — all plain widgets, no ComfyUI Curve widget required.
+    Defaults (constant + linear + 1.0) keep today's behavior.
     """
 
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "conditioning": ("MINIMAX_H3_COND",),
-                "mods": ("H3_REF_MODS",),
-                "retention": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
-                    "display": "number",
-                    "tooltip": "Master reference strength, multiplied with each loader row's "
-                               "strength. MiniMax retention levels: 1.0 = fully_preserved, "
-                               "0.7 = partially_preserved, 0.4 = attribute_transfer (keep "
-                               "style/attributes, not identity), 0.15 = weak_reference. "
-                               "0 = no reference."}),
-            },
-        }
+    def define_schema(cls):
+        template = io.MatchType.Template(
+            "cond",
+            allowed_types=[io.Custom("MINIMAX_H3_COND"), io.Conditioning])
+        return io.Schema(
+            node_id="MiniMaxH3RefModApply",
+            display_name="Apply H3 RefMod",
+            description=(
+                "Inject a loader bundle of RefMods into a MiniMax H3 conditioning. "
+                "Accepts both the pack's MINIMAX_H3_COND and the built-in "
+                "CONDITIONING and returns the same type."
+            ),
+            category="MiniMax-H3/mod",
+            inputs=[
+                io.MatchType.Input("conditioning", template=template,
+                    tooltip="MINIMAX_H3_COND (ComfyUI-MiniMaxH3 pack) or CONDITIONING "
+                            "(core MiniMaxH3ReferenceToVideo)."),
+                io.Custom("H3_REF_MODS").Input("mods",
+                    tooltip="Bundle from Load H3 RefMods / Load H3 RefMod Axis / Extract H3 RefMod."),
+                io.Float.Input("retention", default=1.0, min=0.0, max=1.0, step=0.01,
+                    tooltip="Master reference strength, multiplied with each loader row's "
+                             "strength. MiniMax retention levels: 1.0 = fully_preserved, "
+                             "0.7 = partially_preserved, 0.4 = attribute_transfer (keep "
+                             "style/attributes, not identity), 0.15 = weak_reference. "
+                             "0 = no reference."),
+                io.Combo.Input("curve_direction", options=list(CURVE_DIRECTIONS),
+                    default="constant",
+                    tooltip="Where the strength envelope points over the ref's latent timeline: "
+                            "'constant' keeps one strength for the whole video (flat at "
+                            "curve_value = 1.0, today's behavior); 'increase' ramps 0 -> "
+                            "curve_value (a crescent — reveal the character as they walk in); "
+                            "'decrease' ramps curve_value -> 0 (a decrescent — lock in the "
+                            "identity early, then release the character for motion)."),
+                io.Combo.Input("curve_shape", options=list(CURVE_SHAPES),
+                    default="linear",
+                    tooltip="How the envelope travels between its endpoints: 'linear', 'ease' "
+                            "(smoothstep), 'quadratic', 'cubic', 'exponential', 'stair' "
+                            "(stepped), 'elastic' (overshoots), 'bump' (peak mid-video, for "
+                            "one specific action), 'dip' (trough mid-video)."),
+                io.Float.Input("curve_value", default=1.0, min=0.0, max=1.0, step=0.01,
+                    tooltip="Endpoint value ('user input'): both endpoints for 'constant', the "
+                            "end for 'increase', the start for 'decrease'. 1.0 = full strength "
+                            "at that endpoint."),
+            ],
+            outputs=[
+                io.MatchType.Output(template=template, display_name="conditioning",
+                    tooltip="The conditioning with the ref blocks injected, same type as the input."),
+            ],
+        )
 
-    RETURN_TYPES = ("MINIMAX_H3_COND",)
-    RETURN_NAMES = ("conditioning",)
-    FUNCTION = "apply"
-    CATEGORY = "MiniMax-H3/mod"
-
-    def apply(self, conditioning, mods, retention=1.0):
-        types_mod = _h3_pack_submodule("utils.types")
-        if not isinstance(conditioning, types_mod.H3Conditioning):
-            raise ValueError(
-                "MiniMaxH3RefModApply expects the ComfyUI-MiniMaxH3 pack's "
-                "MINIMAX_H3_COND. For the built-in ComfyUI CONDITIONING path "
-                "use MiniMaxH3RefModApplyCond.")
-        blocks = _ref_blocks(mods, retention)
+    @classmethod
+    def execute(cls, conditioning, mods, retention=1.0,
+                curve_direction="constant", curve_shape="linear", curve_value=1.0,
+                strength_curve=None):
+        # workflows saved before the curve split pass the old single preset name
+        curve = strength_curve if strength_curve is not None \
+            else (curve_direction, curve_shape, curve_value)
+        blocks = _ref_blocks(mods, retention, curve)
+        if isinstance(conditioning, list):
+            # built-in ComfyUI CONDITIONING (core MiniMaxH3ReferenceToVideo)
+            out = []
+            for t in conditioning:
+                d = dict(t[1])
+                d["minimax_refs"] = list(d.get("minimax_refs", [])) + blocks
+                out.append([t[0], d])
+            print(f"[MiniMaxH3RefModApply] retention={retention} "
+                  f"({len(blocks)} ref block(s) injected)")
+            return io.NodeOutput(out)
+        # ComfyUI-MiniMaxH3 pack MINIMAX_H3_COND
         out = replace(conditioning, refs=list(conditioning.refs) + blocks)
         print(f"[MiniMaxH3RefModApply] retention={retention} "
               f"({len(blocks)} ref block(s) injected, {len(out.refs)} total)")
-        return (out,)
-
-
-class MiniMaxH3RefModApplyCond:
-    """
-    Inject a loader bundle of RefMods into a built-in ComfyUI CONDITIONING.
-
-    Use this when conditioning comes from the core MiniMaxH3ReferenceToVideo
-    node.  Appends to any existing ``minimax_refs``.
-    """
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "conditioning": ("CONDITIONING",),
-                "mods": ("H3_REF_MODS",),
-                "retention": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
-                    "display": "number",
-                    "tooltip": "Master reference strength, multiplied with each loader row's "
-                               "strength. MiniMax retention levels: 1.0 = fully_preserved, "
-                               "0.7 = partially_preserved, 0.4 = attribute_transfer (keep "
-                               "style/attributes, not identity), 0.15 = weak_reference. "
-                               "0 = no reference."}),
-            },
-        }
-
-    RETURN_TYPES = ("CONDITIONING",)
-    RETURN_NAMES = ("conditioning",)
-    FUNCTION = "apply"
-    CATEGORY = "MiniMax-H3/mod"
-
-    def apply(self, conditioning, mods, retention=1.0):
-        blocks = _ref_blocks(mods, retention)
-        out = []
-        for t in conditioning:
-            d = dict(t[1])
-            d["minimax_refs"] = list(d.get("minimax_refs", [])) + blocks
-            out.append([t[0], d])
-        print(f"[MiniMaxH3RefModApplyCond] retention={retention} "
-              f"({len(blocks)} ref block(s) injected)")
-        return (out,)
+        return io.NodeOutput(out)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -846,6 +861,10 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
 
     ``identity`` (training mode only) is the refinement loop — the only
     "training" in the pack.
+
+    ``max_tokens`` (0 = off) hard-caps the total injected tokens: when the
+    stacked refs exceed it, near-duplicate latent frames are dropped first,
+    then frames are resampled to fit (see ``core.fit_token_budget``).
     """
 
     @classmethod
@@ -867,12 +886,13 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             inputs=[
                 io.String.Input("name", default="my_concept",
                     tooltip="Saved mod name (appears in the Load H3 RefMods dropdown after a reload)."),
-                io.Combo.Input("mode", options=["training", "encode", "full", "pooled"],
+                io.Combo.Input("mode", options=["training", "encode"],
                     default="training",
                     tooltip="'training' (default) = compressed grid refined by the 'identity' "
                             "dial — a good balance of identity vs tokens. 'encode' = straight "
                             "full-res VAE encode (max identity, MB-size mod, ~1K tokens/img). "
-                            "The old names 'full'/'pooled' still work (kept for saved workflows)."),
+                            "Old mods saved as 'full'/'pooled' still load and normalize to "
+                            "these two."),
                 io.Combo.Input("concept_type", options=list(CONCEPT_TYPES), default="generic",
                     tooltip="What this mod represents — 'identity' (a specific person/character), "
                             "'pose_motion' (a pose/dance/gesture/camera move), 'clothing', "
@@ -945,6 +965,14 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "video/GIF (few tokens) isn't drowned out by the main video's tokens. "
                             "Each repeat duplicates the same latent frames, so attention weight on "
                             "the ref scales roughly with N. 1 = no repeat; file size grows with N."),
+                io.Int.Input("max_tokens", default=0, min=0, max=65536, step=512,
+                    tooltip="Hard cap on the total tokens the mod injects (0 = no cap). If the "
+                            "stacked refs exceed it, near-duplicate latent frames are dropped first "
+                            "(video refs are full of frames that differ only by noise — each one "
+                            "still costs a token per spatial patch in every block), then frames "
+                            "are resampled to fit. The cap is honored after the multiplier. Lower "
+                            "latent_frames/ref_resolution instead to avoid wasting encode work: "
+                            "~23K tokens = one 1024px encode-mode video ref at 16 frames."),
                 io.String.Input("description", default="", multiline=True,
                     tooltip="Optional text describing the concept (e.g. 'a ginger woman with messy "
                             "hair', 'an animation style', 'handheld camera movement'). Stored in "
@@ -963,7 +991,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
     def execute(cls, name, mode, refs_image=None, refs_video=None, refs_bundle=None,
                 av_encoder=None, vae=None,
                 ref_resolution=1024, pool_h=16, pool_w=16, latent_frames=16,
-                identity=500, multiplier=1, description="", save=True,
+                identity=500, multiplier=1, max_tokens=0, description="", save=True,
                 concept_type="generic", mask=None, background_retention=0.0,
                 **legacy) -> io.NodeOutput:
         name = _sanitize_name(name)
@@ -1035,7 +1063,6 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             else:
                 # image slot: pin to a single still even if a batch arrived
                 sources.append((norm[:1], False))
-
         # encode each source independently (full-res or pooled), then stack.
         # Full-res refs must share one spatial canvas so the stacked latent has
         # a single H/W: anchor on the first source, cover-crop the rest to it.
@@ -1179,6 +1206,8 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         latent = torch.cat(frames, dim=2)  # [1, 24, total_t, h, w]
         if multiplier > 1:
             latent = latent.repeat(1, 1, multiplier, 1, 1)  # data multiplier
+        if max_tokens > 0:
+            latent = fit_token_budget(latent, max_tokens, name)
         total_t = latent.shape[2]
         kind = "video" if total_t > 1 else "image"
         # the VAE encodes at 16x spatial scale, so a latent of 40x20 = 640x320 px
@@ -1225,7 +1254,6 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxH3RefModsLoader": MiniMaxH3RefModsLoader,
     "MiniMaxH3RefModsAxis": MiniMaxH3RefModsAxis,
     "MiniMaxH3RefModApply": MiniMaxH3RefModApply,
-    "MiniMaxH3RefModApplyCond": MiniMaxH3RefModApplyCond,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1234,7 +1262,33 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3RefModsLoader": "Load H3 RefMods",
     "MiniMaxH3RefModsAxis": "Load H3 RefMod Axis",
     "MiniMaxH3RefModApply": "Apply H3 RefMod",
-    "MiniMaxH3RefModApplyCond": "Apply H3 RefMod (Cond)",
 }
+
+# The old Apply node was split into two (pack MINIMAX_H3_COND vs built-in
+# CONDITIONING); the merged node above accepts both.  Old workflows saved with
+# MiniMaxH3RefModApplyCond are migrated to the merged node at load time by the
+# replacement below (the old id is deliberately not registered so the manager
+# rewrites it).  Registered once at import; PromptServer exists by the time
+# custom nodes load (main.py creates it before init_extra_nodes).
+try:
+    from comfy_api.latest import ComfyAPI
+    from server import PromptServer
+    if PromptServer.instance is not None:
+        manager = PromptServer.instance.node_replace_manager
+        manager.register(io.NodeReplace(
+            new_node_id="MiniMaxH3RefModApply",
+            old_node_id="MiniMaxH3RefModApplyCond",
+            old_widget_ids=["retention"],
+            input_mapping=[
+                {"new_id": "conditioning", "old_id": "conditioning"},
+                {"new_id": "mods", "old_id": "mods"},
+                {"new_id": "retention", "old_id": "retention"},
+            ],
+            output_mapping=[{"new_idx": 0, "old_idx": 0}],
+        ))
+except Exception:
+    # standalone/CLI contexts without a running server: migration just won't
+    # be registered until ComfyUI actually loads the pack
+    pass
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
