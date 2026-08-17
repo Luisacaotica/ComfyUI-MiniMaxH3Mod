@@ -5,6 +5,26 @@
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
 
+## What's new (2026-08-16) — v0.1.0
+
+- **`H3 RefMod Step Curve` node** — control *when during denoising* the
+  ref is strongest, not just where in the video. Attach it between the
+  model loader and the sampler (`MODEL` → `MODEL`).
+- **Curve controls** — new `concept_at_middle` (`[0..1..0]`) and
+  `concept_at_ends` (`[1..0..1]`) directions, plus `sigmoid` / `tanh`
+  shapes, alongside `concept_at_start` / `concept_at_end`.
+- **`scramble_seed`** — seedable shuffle so a multi-ref mod "pops" a
+  different ref each run instead of always the same one.
+- **`copies` per loader row** — boost a ref 2-10x without duplicating rows.
+- **Curve-graph preview + PNG graph presets** — the Apply node's optional
+  `debug` output draws the strength envelope, and curves can be saved /
+  loaded as shareable images (the graph rides the PNG's metadata).
+- New example: [concept_curve.gif](examples/concept_curve.gif) — the same
+  mod with no curve, `concept_at_end`, and `concept_at_end` + 3 copies.
+
+Version history lives in [CHANGELOG.md](CHANGELOG.md) and on [GitHub
+Releases](https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod/releases).
+
 ## TL;DR (for the busy / new to this)
 
 In MiniMax H3 you can give the AI a **reference** — an image, a video, even a
@@ -437,6 +457,14 @@ mod and prompted as **"ginger woman"**, and a third example pushed into
 JoJo Bizarre-style rendering:
 
 ![Identity success — ginger woman / JoJo style](examples/id_sucess.gif)
+
+### Curve controls
+
+The same mod run three ways — no curve, `concept_at_end`, and
+`concept_at_end` with the loader's `copies` set to 3 (the same row injected
+three times, noticeably stronger):
+
+![Curve controls — nothing vs concept at the end vs concept at the end + 3 copies](examples/concept_curve.gif)
 
 ### Known limitations
 

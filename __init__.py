@@ -21,6 +21,7 @@ Standalone extraction (image/video files): see extract_mod.py
 """
 
 __author__ = "Luisa (luisacaotica)"
+__version__ = "0.1.0"
 
 import os
 import sys
