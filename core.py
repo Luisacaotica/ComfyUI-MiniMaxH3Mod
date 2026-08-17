@@ -227,19 +227,24 @@ def optimize_latent(
 # Per-frame strength curve
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Direction is where the envelope points (its endpoints); shape is how it
-# travels between them; value is the non-zero endpoint ("user input").
-CURVE_DIRECTIONS = ("constant", "increase", "decrease")
-CURVE_SHAPES = ("linear", "ease", "quadratic", "cubic", "exponential",
-                "stair", "elastic", "bump", "dip")
+# Direction names describe where the *concept* shows up in the output, which
+# is the mirror of the strength envelope over the ref's own latent timeline:
+# concept_at_end locks the ref's literal footage at the START and releases it
+# toward the end (was "decrease"), concept_at_start opens free and locks onto
+# the ref near the END (was "increase"). shape is how the envelope travels
+# between its endpoints; value is the non-zero endpoint ("user input").
+CURVE_DIRECTIONS = ("constant", "concept_at_start", "concept_at_middle",
+                    "concept_at_end", "concept_at_ends")
+CURVE_SHAPES = ("linear", "ease", "sigmoid", "tanh", "quadratic", "cubic",
+                "exponential", "stair", "elastic", "bump", "dip")
 
 # old single-combo preset names -> (direction, shape, value) so workflows
 # saved before the curve was split still resolve
 _LEGACY_CURVES = {
     "flat": ("constant", "linear", 1.0),
-    "fade_in": ("increase", "linear", 1.0),
-    "fade_out": ("decrease", "linear", 1.0),
-    "bump": ("increase", "bump", 1.0),
+    "fade_in": ("concept_at_start", "linear", 1.0),
+    "fade_out": ("concept_at_end", "linear", 1.0),
+    "bump": ("concept_at_start", "bump", 1.0),
     "dip": ("constant", "dip", 1.0),
 }
 
@@ -250,6 +255,10 @@ def _ease(shape: str, x: float) -> float:
         return x
     if shape == "ease":  # smoothstep
         return x * x * (3.0 - 2.0 * x)
+    if shape == "sigmoid":  # logistic S-curve
+        return 1.0 / (1.0 + math.exp(-12.0 * (x - 0.5)))
+    if shape == "tanh":  # sharper S-curve (steeper knee than sigmoid)
+        return 0.5 * (math.tanh(8.0 * (x - 0.5)) + 1.0)
     if shape == "quadratic":
         return x * x
     if shape == "cubic":
@@ -279,10 +288,14 @@ def curve_strengths(spec, t: int) -> Optional[List[float]]:
     Accepts:
 
       * a ``(direction, shape, value)`` tuple — direction is ``constant``
-        (one strength everywhere), ``increase`` (0 -> value, a crescent) or
-        ``decrease`` (value -> 0, a decrescent); shape is how the envelope
-        travels between its endpoints (see ``_ease``); value is the non-zero
-        endpoint (1.0 = full strength there);
+        (one strength everywhere), ``concept_at_start`` (0 -> value, a
+        crescent — the concept shows early; legacy ``increase``),
+        ``concept_at_end`` (value -> 0, a decrescent — the concept pops at
+        the end; legacy ``decrease``), ``concept_at_middle`` ([0..1..0] —
+        concept peaks mid-timeline) or ``concept_at_ends`` ([1..0..1] —
+        concept at both ends); shape is how the envelope travels between
+        its endpoints (see ``_ease``); value is the non-zero endpoint
+        (1.0 = full strength there);
       * a legacy preset name (``flat``/``fade_in``/``fade_out``/``bump``/
         ``dip``) from before the split;
       * a list of per-frame floats (len == t), used as-is;
@@ -312,10 +325,16 @@ def curve_strengths(spec, t: int) -> Optional[List[float]]:
             p = [_ease(shape, i / (t - 1)) for i in range(t)]
             return [max(0.0, min(1.0, value * y)) for y in p]
         p = [_ease(shape, i / (t - 1)) for i in range(t)]
-        if direction == "increase":
+        # legacy "increase"/"decrease" (pre-rename workflows) map onto the same
+        # envelopes as the concept-placement names
+        if direction in ("increase", "concept_at_start"):
             return [max(0.0, min(1.0, value * y)) for y in p]
-        if direction == "decrease":
+        if direction in ("decrease", "concept_at_end"):
             return [max(0.0, min(1.0, value * (1.0 - y))) for y in p]
+        if direction == "concept_at_middle":  # [0..1..0]: concept peaks mid-timeline
+            return [max(0.0, min(1.0, value * (1.0 - abs(2.0 * y - 1.0)))) for y in p]
+        if direction == "concept_at_ends":  # [1..0..1]: concept at both ends
+            return [max(0.0, min(1.0, value * abs(2.0 * y - 1.0))) for y in p]
         return None  # unknown direction: treat as flat
     if isinstance(spec, (list, tuple)):
         if len(spec) == t and all(isinstance(v, (int, float)) for v in spec):
@@ -341,6 +360,40 @@ def curve_strengths(spec, t: int) -> Optional[List[float]]:
     if callable(interp):
         return [float(interp(i / (t - 1))) for i in range(t)]
     return None
+
+
+def curve_value_at(spec, x: float) -> float:
+    """Per-progress strength of a curve spec at one point ``x`` in [0, 1].
+
+    The continuous analog of ``curve_strengths`` — same direction/shape/value
+    math, but evaluated at a single progress value instead of discretized over
+    frames.  The step-curve node uses it to re-mix the ref latents once per
+    denoising step, where ``x`` is the denoise progress (0 = first step,
+    1 = last step).  Returns 1.0 (no weakening) for anything unrecognized.
+    """
+    if spec is None or spec == "":
+        return 1.0
+    if isinstance(spec, str):
+        legacy = _LEGACY_CURVES.get(spec)
+        return curve_value_at(legacy, x) if legacy is not None else 1.0
+    if (isinstance(spec, tuple) and len(spec) == 3
+            and isinstance(spec[0], str) and isinstance(spec[1], str)):
+        direction, shape, value = spec
+        value = float(value)
+        if direction == "constant":
+            if shape == "linear":
+                return value
+            return max(0.0, min(1.0, value * _ease(shape, x)))
+        y = _ease(shape, x)
+        if direction in ("increase", "concept_at_start"):
+            return max(0.0, min(1.0, value * y))
+        if direction in ("decrease", "concept_at_end"):
+            return max(0.0, min(1.0, value * (1.0 - y)))
+        if direction == "concept_at_middle":  # [0..1..0]: concept peaks mid-timeline
+            return max(0.0, min(1.0, value * (1.0 - abs(2.0 * y - 1.0))))
+        if direction == "concept_at_ends":  # [1..0..1]: concept at both ends
+            return max(0.0, min(1.0, value * abs(2.0 * y - 1.0)))
+    return 1.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -490,7 +543,7 @@ class H3RefMod:
 
         ``curve`` (optional) is a per-frame strength spec for the ref's
         latent timeline — a ``(direction, shape, value)`` tuple (e.g.
-        ``("decrease", "ease", 1.0)``), a legacy preset name, a list of
+        ``("concept_at_end", "ease", 1.0)``), a legacy preset name, a list of
         per-frame floats, ``(x, y)`` control points, or any object with
         ``interp(x)`` (see ``curve_strengths``).  Each frame is mixed with
         its own strength ``retention * curve(x)`` instead of one flat value,

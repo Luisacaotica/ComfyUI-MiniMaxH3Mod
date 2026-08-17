@@ -186,12 +186,16 @@ and you won't waste encode work.
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Extract H3 RefMod`      | two typed Autogrow inputs — **`ref_image_1`** (stills) and **`ref_video_1`** (video frames) — each grows its own next slot → encode (full-res) or training (refined pool) latent, saved as `.safetensors`. `max_tokens` (default 5120) hard-caps the injected token count (drops near-duplicate frames first, then resamples to fit) |
 | `Load H3 RefMod Folder`  | load every image/video in a folder as an ordered ref list → feed its `refs_bundle` into Extract for bulk extraction                                                             |
-| `Load H3 RefMods`        | one node, 1-8 mod dropdowns **with a typed strength each** (LoRA-loader style); `show_info` prints each mod's layout/token budget                                               |
+| `Load H3 RefMods`        | one node, 1-8 mod dropdowns **with a typed strength + a `copies` boost each** (LoRA-loader style); `show_info` prints each mod's layout/token budget                                               |
 | `Load H3 RefMod Axis`    | A/B mod pairs on one **signed slider** each — negative uses mod A, positive uses mod B (e.g. a young↔old age dial)                                                              |
-| `Apply H3 RefMod`        | one node for both conditioning types — appends the bundle to a `MINIMAX_H3_COND` (ComfyUI-MiniMaxH3 pack) **or** the built-in `CONDITIONING` (`minimax_refs`); a curve split into `curve_direction` (constant / increase / decrease) + `curve_shape` (linear / ease / exponential / stair / elastic / bump…) + `curve_value` fades the ref across the video timeline |
+| `Apply H3 RefMod`        | one node for both conditioning types — appends the bundle to a `MINIMAX_H3_COND` (ComfyUI-MiniMaxH3 pack) **or** the built-in `CONDITIONING` (`minimax_refs`); a curve split into `curve_direction` (constant / concept_at_start / concept_at_middle / concept_at_end / concept_at_ends) + `curve_shape` (linear / ease / sigmoid / tanh / exponential / stair / elastic / bump / dip…) + `curve_value` fades the ref across the video timeline; `scramble_seed` shuffles a multi-ref bundle (seedable, -1 = off) so a different ref leads each run; optional shared `graph_preset` (load a curve from `models/refmods/graph_presets/`) + `save_preset_as` (write one); optional `debug` IMAGE output — a 1024x1024 curve graph (direction/shape/value with the concept zone shaded) |
+| `H3 RefMod Step Curve`   | same curve widgets, but over the **denoise timeline** — attach between the model loader and sampler (`MODEL` → `MODEL`); re-mixes every ref per step (early steps lock composition/identity, late steps stay clean or refine detail) via a ComfyUI `DIFFUSION_MODEL` wrapper |
 
 The old single loader, multi loader, Info, Compose, preset and split-Apply
-nodes are gone — one loader with per-row strengths + a `show_info` toggle and
+nodes are gone — one loader with per-row strengths + per-row `copies` boost
+(2+ = inject the same mod twice/3x, the manual row-duplication trick as a
+knob — more copies = stronger reference, but each copy costs its full token
+count in every DiT block) + a `show_info` toggle and
 one Apply that accepts both conditioning types replace them. Old workflows
 saved with `Apply H3 RefMod (Cond)` auto-migrate to the merged Apply node at
 load time.
@@ -222,29 +226,112 @@ still discarding the detail that makes a reference strong.
 
 The Apply node's curve is a per-frame envelope over the ref's latent
 timeline, split into **two plain dropdowns + one value** (no Curve widget
-needed):
+needed). The dropdown names describe **where the concept shows up in the
+output**, which is the mirror of the strength envelope over the ref's own
+frames — that's why the old `decrease`/`increase` names felt backwards:
 
-- `curve_direction` — where the envelope points: `constant` (one strength
-  for the whole video, today's behavior), `increase` (0 → `curve_value`, a
-  crescent: reveal the character as they walk in), `decrease`
-  (`curve_value` → 0, a decrescent: lock in the identity early, then let
-  the character move freely).
+- `curve_direction` — where the concept lands: `concept_at_end` (default;
+  was `decrease`) locks the ref's literal footage in at the **start** and
+  releases it toward the end — the identity/character emerges in the second
+  half, without dragging the ref's background in. `concept_at_start` (was
+  `increase`) opens free from the ref and locks onto it near the **end** —
+  the concept shows early. `concept_at_middle` peaks mid-timeline
+  (`[0..1..0]` — the concept appears only in the middle of the video),
+  `concept_at_ends` holds both ends and dips in the middle (`[1..0..1]`).
+  `constant` keeps one strength for the whole video (today's original
+  behavior). Old `decrease`/`increase` values saved in workflows still
+  resolve to the same envelopes.
 - `curve_shape` — how the envelope travels between its endpoints: `linear`,
-  `ease` (smoothstep), `quadratic`, `cubic`, `exponential`, `stair`
-  (stepped), `elastic` (overshoots), `bump` (peak mid-video, for one
-  specific action like a glitch scene), `dip` (trough mid-video).
+  `ease` (smoothstep), `sigmoid` / `tanh` (smooth S-curves, `tanh` with a
+  steeper knee), `quadratic`, `cubic`, `exponential`, `stair` (stepped),
+  `elastic` (overshoots), `bump` (peak mid-video, for one specific action
+  like a glitch scene), `dip` (trough mid-video).
 - `curve_value` (0-1, default 1.0) — the non-zero endpoint ("user input"):
-  both endpoints for `constant`, the end for `increase`, the start for
-  `decrease`.
+  both endpoints for `constant` / `concept_at_ends`, the end for
+  `concept_at_start`, the start for `concept_at_end`, the mid peak for
+  `concept_at_middle`.
 
 Each latent frame is mixed with `retention * curve(x)` (x = 0..1 across the
-frames) instead of one flat value. Defaults are **`decrease` + `ease`** —
-the ref starts at full strength (identity locks in on the first frames)
-then fades out smoothly, which inserts a character without dragging the
-ref's background/framing into the rest of the video. For other moods pick
-`constant` + `linear` for a flat envelope (today's original behavior),
-`increase` + `exponential` for a slow build-up, or `constant` + `bump` to
-keep the ref loud only mid-video.
+frames) instead of one flat value. Defaults are **`concept_at_end` +
+`ease`** — the ref starts at full strength (identity locks in on the first
+frames) then fades out smoothly, which inserts a character without dragging
+the ref's background/framing into the rest of the video. For other moods
+pick `constant` + `linear` for a flat envelope (today's original behavior),
+`concept_at_start` + `exponential` for a slow build-up, `constant` + `bump`
+or `concept_at_middle` + `sigmoid` to keep the ref loud only mid-video, and
+`concept_at_ends` for a ref that frames the start and end but lets the
+middle breathe.
+
+### Ref scrambling (seed)
+
+A mod extracted from several images/videos holds multiple refs, and the
+model can keep "popping" the same one every run. The Apply node's
+`scramble_seed` (default **-1 = off**) shuffles the bundle's ref order and
+keeps a random subset, so a different ref leads each run:
+
+- `-1` (default) — all refs, saved order (today's behavior, unchanged).
+- any seed ≥ 0 — deterministic shuffle + subset: the same seed always
+  produces the same scramble, different seeds vary which refs get injected
+  and which leads the timeline.
+- set the widget's control-after-generate to `randomize` and the seed
+  changes every run for automatic variation.
+
+### Curve graph (preview) + shared graph presets
+
+The Apply node has an optional **`debug`** IMAGE output: a 1024x1024 curve
+graph showing the strength envelope — `direction` / `shape` / `value` with
+the concept zone shaded where the concept shows up, gridlines and a peak
+marker. Leave the output unconnected and nothing changes — it's pure
+visualization.
+
+Curves can also be shared as **graph presets** — and the preset *is* the
+preview. To save the current curve, type a name in the Apply node's
+`save_preset_as` field and run: it writes a PNG of the curve graph with the
+curve embedded in its image metadata
+(`ComfyUI/models/refmods/graph_presets/<name>.png`, created on first use
+next to the mods). To load one, pick it in the `graph_preset` dropdown
+(anything other than `(none)` overrides the curve widgets, and the graph
+shows `preset: <name>` so it's obvious where the values came from).
+
+Sharing a curve is just sharing the preset **image** — it's both a visual
+preview and the machine-readable config, so a friend can drop your PNG into
+their `graph_presets/` folder, restart, and load the exact same curve. The
+metadata is a `graph` text chunk:
+
+```json
+{"direction": "concept_at_middle", "shape": "sigmoid", "value": 1.0}
+```
+
+Presets saved by earlier versions as plain `.json` files still load. New
+presets appear in the dropdown after a ComfyUI restart.
+
+### Ref strength over denoising steps (step curve)
+
+**What it's for:** the frame curve above controls *where* the concept shows
+up in the video; `H3 RefMod Step Curve` controls *when during denoising*
+the ref is strongest — useful when the ref's background/framing bleeds into
+the output, because early and late steps shape very different things. It is
+a separate node you attach between the model loader and the sampler
+(`MODEL` → `MODEL`, same type, optional).
+
+The frame curve runs over the **video's timeline** and is baked into the ref
+latent once, before sampling. `H3 RefMod Step Curve` runs the **same curve
+widgets** over the **denoise timeline** instead, re-mixing every ref latent
+once per step at generation time:
+
+- **early steps (high sigma)** set global structure and identity;
+- **late steps (low sigma)** paint fine texture and grain.
+
+So the same directions mean: `concept_at_end` (default) keeps the refs at
+full strength for the early steps — composition and identity lock in first,
+then the ref is released for the final passes (clean texture, no ref
+**grain**); `concept_at_start` opens weak and locks full strength in the
+late steps — identity detail is refined at the very end; `constant` keeps
+one strength for every step (today's behavior). It composes with the frame
+curve (both can be on at once) and with `scramble_seed`, and it applies to
+every ref in the conditioning — pack mods and native ref2va refs alike.
+The mechanism is a ComfyUI `DIFFUSION_MODEL` wrapper (the same hook
+sage-attention/blockswap use), so no core edits are needed.
 
 ### Concept axes (signed A/B sliders)
 
