@@ -5,6 +5,14 @@ All notable changes are tracked here. Each version is also published as a
 so you can keep using an older version if a new one changes something you
 rely on.
 
+## Unreleased
+
+### Fixed
+
+- Mod storage honours `extra_model_paths.yaml`: a registered `refmods` path
+  is used for saving and every registered path is scanned when listing mods,
+  instead of always hardcoding `models/refmods` ([#4](https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod/issues/4)).
+
 ## v0.1.0 — 2026-08-16
 
 First tagged release. Extract references once as tiny `.safetensors`

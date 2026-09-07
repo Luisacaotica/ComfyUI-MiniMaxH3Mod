@@ -150,11 +150,17 @@ def _h3_pack_submodule(subpath: str):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _mod_search_dirs() -> List[str]:
-    dirs = [refmods_dir()]
+    """Every folder scanned for mods: the primary refmods dir, any other
+    registered "refmods" path (extra_model_paths.yaml), then legacy locations."""
+    try:
+        registered = list(folder_paths.get_folder_paths("refmods"))
+    except KeyError:
+        registered = []
     root_models_mods = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "models", "mods")
-    for d in (root_models_mods, LEGACY_MODS_DIR):
+    dirs: List[str] = []
+    for d in [refmods_dir()] + registered + [root_models_mods, LEGACY_MODS_DIR]:
         if d not in dirs and os.path.isdir(d):
             dirs.append(d)
     return dirs

@@ -12,13 +12,19 @@ VIDEO_EXTS = {".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v"}
 
 
 def refmods_dir() -> str:
-    """ComfyUI models/refmods — the mod storage folder, created on first use.
+    """The mod storage folder, created on first use.
 
-    Sits next to loras/, unet/ etc. instead of inside the pack folder, so mods
-    live in the standard model tree.
+    A "refmods" path registered with ComfyUI (e.g. via extra_model_paths.yaml)
+    wins; otherwise models/refmods, next to loras/ unet/ etc.  First existing
+    candidate is used, so a YAML mapping only takes over once it is real.
     """
     import folder_paths
-    d = os.path.join(folder_paths.models_dir, "refmods")
+    try:
+        paths = list(folder_paths.get_folder_paths("refmods"))
+    except KeyError:
+        paths = []
+    paths.append(os.path.join(folder_paths.models_dir, "refmods"))
+    d = next((p for p in paths if os.path.isdir(p)), paths[0])
     os.makedirs(d, exist_ok=True)
     return d
 
