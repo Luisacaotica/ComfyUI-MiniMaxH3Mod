@@ -5,7 +5,7 @@
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
 
-## What's new — v0.2.0 (unreleased)
+## What's new — v0.2.0
 
 - **RefMod Master** — extract image/video and audio references in one node,
   with separate VAE inputs, one output bundle and a combined token budget.

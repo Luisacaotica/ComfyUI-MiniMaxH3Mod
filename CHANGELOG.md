@@ -5,7 +5,14 @@ All notable changes are tracked here. Each version is also published as a
 so you can keep using an older version if a new one changes something you
 rely on.
 
-## v0.2.0 — unreleased
+## v0.2.0 — 2026-09-07
+
+### Known limitation: voice transfer
+
+Audio reference support includes an observed music-transfer example, but current
+speaker-identity tests failed. This release does not provide working voice cloning.
+The cause has not been isolated between H3/checkpoint behavior and the reference
+presentation difference in the current RefMod integration.
 
 ### Follow-up implementation (2026-09-07)
 

@@ -1,6 +1,6 @@
 # RefMod — implementação e validação
 
-Atualizado em 07/09/2026. Alterações na árvore local, sem publicação ou commit nesta tarefa.
+Atualizado em 07/09/2026. Relatório de implementação e validação da v0.2.0.
 
 ## Correções concluídas
 
@@ -31,7 +31,7 @@ Atualizado em 07/09/2026. Alterações na árvore local, sem publicação ou com
 
 ## Validação
 
-**38 testes aprovados** (37 na suíte completa, mais a nova validação de fila do Save; os três testes do Save também passaram na execução focada), com Python embarcado e módulos reais do ComfyUI:
+**39 testes aprovados na suíte completa antes da publicação da v0.2.0**, com Python embarcado e módulos reais do ComfyUI:
 
 ```powershell
 ../../../python_embeded/python.exe -m unittest discover -s tests -v
