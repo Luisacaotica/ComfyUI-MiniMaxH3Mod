@@ -409,7 +409,7 @@ other inputs. A prompt can clarify intent, but it does not guarantee selective
 transfer, exact dance/camera reproduction, face replacement or silence between
 spoken phrases. RefMod currently has no `<Name>` trigger parser.
 
-## Examples (screenshots)
+## Examples
 
 Development examples; screenshots may show older names/defaults. Individual
 results are illustrations, not controlled benchmarks or quality guarantees.
@@ -434,8 +434,17 @@ we cannot attribute the failure exclusively to H3 or rule out RefMod integration
 In this example, the author supplied a music clip to RefMod and reported that
 the generated video included the reference music as background audio.
 
-- [Listen to the input music](examples/audio_input.mp3)
-- [Watch the generated video](examples/audio_refmod_example.mp4)
+**Input music** — waveform preview with audio. Enable sound in the player.
+
+https://github.com/user-attachments/assets/a3e1c07a-cc88-47e2-b754-2d8ca2bc3c19
+
+[Original MP3](examples/audio_input.mp3) · [Waveform MP4](examples/audio_input_preview.mp4)
+
+**Generated video** — the RefMod music-reference result.
+
+https://github.com/user-attachments/assets/ef72642c-80c2-4152-82fe-915e6dd57824
+
+[Original output MP4](examples/audio_refmod_example.mp4)
 
 Prompt used, unchanged:
 
