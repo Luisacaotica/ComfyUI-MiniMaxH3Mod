@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -62,6 +63,7 @@ CONCEPT_TYPES = (
     "pose_motion",   # a pose, dance, gesture, camera move
     "clothing",      # an outfit / garment, decoupled from who's wearing it
     "background",    # environment / set / location plate
+    "voice", "singing", "music_style", "sound_fx", "ambience",
     "style",         # look/grade/animation style, not a concrete subject
 )
 
@@ -84,8 +86,15 @@ def _blur_latent(z: torch.Tensor, factor: int = 8) -> torch.Tensor:
     manifold (smooth, plausible) while still discarding detail as strength
     drops, which is what "weaker reference" should actually look like.
     """
+    if z.dim() == 4:
+        b, c, stereo, t = z.shape
+        if t <= 1:
+            return z
+        flat = z.reshape(b * c * stereo, 1, t).float()
+        down = F.adaptive_avg_pool1d(flat, max(1, t // factor))
+        return F.interpolate(down, size=t, mode="linear", align_corners=False).reshape_as(z).to(z.dtype)
     if z.dim() != 5:
-        return z
+        raise ValueError(f"Unsupported RefMod latent shape: {tuple(z.shape)}")
     t, h, w = z.shape[2], z.shape[3], z.shape[4]
     sh, sw = max(1, h // factor), max(1, w // factor)
     down = F.adaptive_avg_pool3d(z.float(), (t, sh, sw))
@@ -103,8 +112,10 @@ def read_refmod_meta(path_no_ext: str) -> Optional[Dict]:
     try:
         with safe_open(path_no_ext + ".safetensors", framework="pt") as f:
             meta = f.metadata()
-        if meta and META_KEY in meta:
-            return json.loads(meta[META_KEY])
+        if meta:
+            for key in (META_KEY, "audio_refmod_meta"):
+                if key in meta:
+                    return json.loads(meta[key])
     except Exception:
         pass
     jpath = path_no_ext + ".json"
@@ -223,16 +234,63 @@ def optimize_latent(
     return refined
 
 
+def optimize_latent_multi(z_init, targets, steps=150, lr=0.02, device=None,
+                          progress_every=0, strategy="grouped"):
+    """Mean reconstruction objective with bounded activation memory.
+
+    grouped: average targets with identical shapes on CPU before refinement.
+    stream: transfer one target per gradient contribution.
+    resident: retain targets on the compute device, backward one at a time.
+    All strategies optimize the same mean MSE; grouping drops a constant term.
+    """
+    if not targets or steps <= 0:
+        return z_init
+    if strategy not in ("grouped", "stream", "resident"):
+        raise ValueError("Unknown multi-reference optimization strategy.")
+    device = device or z_init.device
+    with torch.inference_mode(False), torch.set_grad_enabled(True):
+        count = len(targets)
+        if strategy == "grouped":
+            groups = {}
+            for target in targets:
+                key = tuple(target.shape)
+                value = target.detach().to(device="cpu", dtype=torch.float32).clone()
+                if key in groups:
+                    groups[key][0].add_(value)
+                    groups[key][1] += 1
+                else:
+                    groups[key] = [value, 1]
+            prepared = [(total.div_(n), n / count) for total, n in groups.values()]
+        else:
+            target_device = device if strategy == "resident" else "cpu"
+            prepared = [(t.detach().to(device=target_device, dtype=torch.float32).clone(), 1 / count) for t in targets]
+        param = nn.Parameter(z_init.clone().float().to(device))
+        opt = torch.optim.Adam([param], lr=lr)
+        for i in range(steps):
+            opt.zero_grad()
+            for target, weight in prepared:
+                current = target.to(device)
+                up = F.interpolate(param, size=tuple(current.shape[2:]), mode="trilinear", align_corners=False)
+                (F.mse_loss(up, current) * weight).backward()
+                del up, current
+            opt.step()
+            if progress_every and (i + 1) % progress_every == 0:
+                print(f"[RefMod] merge {i + 1}/{steps}")
+        return param.detach().to(z_init.dtype)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Per-frame strength curve
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Direction names describe where the *concept* shows up in the output, which
-# is the mirror of the strength envelope over the ref's own latent timeline:
-# concept_at_end locks the ref's literal footage at the START and releases it
-# toward the end (was "decrease"), concept_at_start opens free and locks onto
-# the ref near the END (was "increase"). shape is how the envelope travels
-# between its endpoints; value is the non-zero endpoint ("user input").
+# Direction names describe where the *concept* shows up in the output, and
+# the envelope is strong exactly where the concept lands: concept_at_start
+# keeps the ref at full strength at the START of the video and releases it
+# toward the end, concept_at_end fades it in toward the END. The old
+# "decrease"/"increase" envelopes are kept as legacy aliases (decrease =
+# concept_at_start, increase = concept_at_end) so pre-rename workflows keep
+# their behavior. shape is how the envelope travels between its endpoints;
+# value is the non-zero endpoint ("user input").
 CURVE_DIRECTIONS = ("constant", "concept_at_start", "concept_at_middle",
                     "concept_at_end", "concept_at_ends")
 CURVE_SHAPES = ("linear", "ease", "sigmoid", "tanh", "quadratic", "cubic",
@@ -242,9 +300,11 @@ CURVE_SHAPES = ("linear", "ease", "sigmoid", "tanh", "quadratic", "cubic",
 # saved before the curve was split still resolve
 _LEGACY_CURVES = {
     "flat": ("constant", "linear", 1.0),
-    "fade_in": ("concept_at_start", "linear", 1.0),
-    "fade_out": ("concept_at_end", "linear", 1.0),
-    "bump": ("concept_at_start", "bump", 1.0),
+    # keep each preset's historical envelope: fade_in = crescent (0 -> value),
+    # fade_out = decrescent (value -> 0), bump = mid peak
+    "fade_in": ("concept_at_end", "linear", 1.0),
+    "fade_out": ("concept_at_start", "linear", 1.0),
+    "bump": ("concept_at_end", "bump", 1.0),
     "dip": ("constant", "dip", 1.0),
 }
 
@@ -288,14 +348,14 @@ def curve_strengths(spec, t: int) -> Optional[List[float]]:
     Accepts:
 
       * a ``(direction, shape, value)`` tuple — direction is ``constant``
-        (one strength everywhere), ``concept_at_start`` (0 -> value, a
-        crescent — the concept shows early; legacy ``increase``),
-        ``concept_at_end`` (value -> 0, a decrescent — the concept pops at
-        the end; legacy ``decrease``), ``concept_at_middle`` ([0..1..0] —
-        concept peaks mid-timeline) or ``concept_at_ends`` ([1..0..1] —
-        concept at both ends); shape is how the envelope travels between
-        its endpoints (see ``_ease``); value is the non-zero endpoint
-        (1.0 = full strength there);
+        (one strength everywhere), ``concept_at_start`` (value -> 0, a
+        decrescent — the concept shows in the first half; legacy
+        ``decrease``), ``concept_at_end`` (0 -> value, a crescent — the
+        concept shows in the second half; legacy ``increase``),
+        ``concept_at_middle`` ([0..1..0] — concept peaks mid-timeline) or
+        ``concept_at_ends`` ([1..0..1] — concept at both ends); shape is how
+        the envelope travels between its endpoints (see ``_ease``); value is
+        the non-zero endpoint (1.0 = full strength there);
       * a legacy preset name (``flat``/``fade_in``/``fade_out``/``bump``/
         ``dip``) from before the split;
       * a list of per-frame floats (len == t), used as-is;
@@ -325,11 +385,12 @@ def curve_strengths(spec, t: int) -> Optional[List[float]]:
             p = [_ease(shape, i / (t - 1)) for i in range(t)]
             return [max(0.0, min(1.0, value * y)) for y in p]
         p = [_ease(shape, i / (t - 1)) for i in range(t)]
-        # legacy "increase"/"decrease" (pre-rename workflows) map onto the same
-        # envelopes as the concept-placement names
-        if direction in ("increase", "concept_at_start"):
+        # legacy "decrease"/"increase" (pre-rename workflows) keep their
+        # original envelopes: decrease = strong at the start, increase =
+        # strong at the end.  The concept_* names mean exactly what they say.
+        if direction in ("concept_at_end", "increase"):
             return [max(0.0, min(1.0, value * y)) for y in p]
-        if direction in ("decrease", "concept_at_end"):
+        if direction in ("concept_at_start", "decrease"):
             return [max(0.0, min(1.0, value * (1.0 - y))) for y in p]
         if direction == "concept_at_middle":  # [0..1..0]: concept peaks mid-timeline
             return [max(0.0, min(1.0, value * (1.0 - abs(2.0 * y - 1.0)))) for y in p]
@@ -385,9 +446,9 @@ def curve_value_at(spec, x: float) -> float:
                 return value
             return max(0.0, min(1.0, value * _ease(shape, x)))
         y = _ease(shape, x)
-        if direction in ("increase", "concept_at_start"):
+        if direction in ("concept_at_end", "increase"):
             return max(0.0, min(1.0, value * y))
-        if direction in ("decrease", "concept_at_end"):
+        if direction in ("concept_at_start", "decrease"):
             return max(0.0, min(1.0, value * (1.0 - y)))
         if direction == "concept_at_middle":  # [0..1..0]: concept peaks mid-timeline
             return max(0.0, min(1.0, value * (1.0 - abs(2.0 * y - 1.0))))
@@ -444,9 +505,13 @@ def fit_token_budget(latent: torch.Tensor, budget: int, label: str) -> torch.Ten
     rope grid and degrades the reference, so time is the only honest lever.
     ``label`` is the mod name for the console notes.
     """
+    if budget <= 0:
+        return latent
     h, w = latent.shape[3], latent.shape[4]
     per_frame = (h // 2) * (w // 2)
     t = latent.shape[2]
+    if per_frame > budget:
+        raise ValueError(f"{label}: one frame costs {per_frame} tokens, above budget {budget}. Lower ref_resolution or pool size.")
     if per_frame * t <= budget:
         return latent
     kept = dedup_frame_indices(latent)
@@ -505,8 +570,22 @@ class H3RefMod:
     tags: List[str] = field(default_factory=list)
     description: str = ""     # optional text describing the concept (emitted by the loaders)
     concept_type: str = "generic"  # what this mod represents; see CONCEPT_TYPES above
+    config: Dict = field(default_factory=dict)
+    # Recommended Apply/Step-Curve settings baked in by the "Fix H3 RefMod
+    # Config" node: {"retention": float, "curve": [direction, shape, value],
+    # "step_curve": [direction, shape, value]}.  The Apply / Step Curve
+    # nodes' ``override`` toggle reads it back so a concept ships with the
+    # settings that make it work — newbies never have to tune.
+    sample_rate: int = 32000
+    path: str = ""            # path_no_ext the mod was loaded from / saved to (for re-saving)
 
     def __post_init__(self):
+        if self.kind == "audio":
+            if self.latent.ndim != 4 or tuple(self.latent.shape[:3]) != (1, 32, 2) or self.latent.shape[-1] < 1:
+                raise ValueError("H3 audio RefMod must contain [1,32,2,T] with T >= 1.")
+            self.latent_t = self.latent.shape[-1]
+            self.latent_h = self.latent_w = 0
+            return
         if self.kind not in ("image", "video"):
             raise ValueError(f"kind must be 'image' or 'video' (got {self.kind!r})")
         if self.kind == "image":
@@ -517,6 +596,8 @@ class H3RefMod:
     @property
     def token_count(self) -> int:
         """Number of patchified tokens the mod injects into the packed sequence."""
+        if self.kind == "audio":
+            return 2 * self.latent_t
         per_frame = (self.latent_h // 2) * (self.latent_w // 2)
         return self.latent_t * per_frame
 
@@ -553,17 +634,17 @@ class H3RefMod:
         if strength <= 0.0:
             return None
         latent = self.latent
-        if curve is not None and self.latent_t > 1:
-            strengths = curve_strengths(curve, self.latent_t)
-            if strengths is not None:
-                t = self.latent_t
-                st = torch.tensor(
-                    [max(0.0, min(1.0, strength * s)) for s in strengths],
-                    dtype=latent.dtype, device=latent.device)
-                st = st.view(1, 1, t, 1, 1)
+        strengths = curve_strengths(curve, self.latent_t) if curve is not None else None
+        if strengths is not None:
+            weights = [max(0.0, min(1.0, strength * value)) for value in strengths]
+            if any(value < 1.0 for value in weights):
+                shape = (1, 1, 1, self.latent_t) if self.kind == "audio" else (1, 1, self.latent_t, 1, 1)
+                st = latent.new_tensor(weights).view(shape)
                 latent = st * latent + (1.0 - st) * _blur_latent(latent)
         elif strength < 1.0:
             latent = strength * latent + (1.0 - strength) * _blur_latent(latent)
+        if self.kind == "audio":
+            return {"kind": "audio", "ref_audio_t": self.latent_t, "audio_latent": latent}
         block: Dict = {
             "kind": self.kind,
             "latent_h": self.latent_h,
@@ -595,30 +676,46 @@ class H3RefMod:
             "tags": self.tags,
             "description": self.description,
             "concept_type": self.concept_type,
-            "_format_version": 2,
+            "_format_version": 4,
+            "sample_rate": self.sample_rate,
         }
-        save_file({"latent": self.latent.contiguous()}, path_no_ext + ".safetensors",
-                  metadata={META_KEY: json.dumps(meta)})
-        return path_no_ext + ".safetensors"
+        if self.config:
+            meta["refmod_config"] = json.dumps(self.config)
+        destination = path_no_ext + ".safetensors"
+        fd, temporary = tempfile.mkstemp(prefix=".refmod-", suffix=".tmp", dir=os.path.dirname(destination) or ".")
+        os.close(fd)
+        try:
+            save_file({"latent": self.latent.contiguous()}, temporary,
+                      metadata={META_KEY: json.dumps(meta)})
+            os.replace(temporary, destination)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return destination
 
     @classmethod
     def load(cls, path_no_ext: str, device: str = "cpu") -> "H3RefMod":
         """Load from ``{path}.safetensors`` (metadata in header, or legacy .json)."""
         meta = read_refmod_meta(path_no_ext)
-        if meta is None:
+        if not isinstance(meta, dict):
             raise ValueError(
                 f"{path_no_ext}.safetensors has no RefMod metadata "
                 f"(header key '{META_KEY}' or sidecar .json missing).")
         # clone drops the file mmap, so the file isn't locked on Windows and
         # can be re-saved over the same name
         latent = load_file(path_no_ext + ".safetensors", device=device)["latent"].clone()
+        raw_config = meta.get("refmod_config")
+        try:
+            config = json.loads(raw_config) if isinstance(raw_config, str) else {}
+        except ValueError:
+            config = {}
         return cls(
             name=meta.get("name", os.path.basename(path_no_ext)),
             kind=meta.get("kind", "image"),
             latent=latent,
-            latent_h=int(meta.get("latent_h", latent.shape[3])),
-            latent_w=int(meta.get("latent_w", latent.shape[4])),
-            latent_t=int(meta.get("latent_t", latent.shape[2])),
+            latent_h=int(meta.get("latent_h", latent.shape[3] if latent.ndim == 5 else 0)),
+            latent_w=int(meta.get("latent_w", latent.shape[4] if latent.ndim == 5 else 0)),
+            latent_t=int(meta.get("latent_t", latent.shape[2] if latent.ndim == 5 else latent.shape[-1])),
             mode=normalize_mode(meta.get("mode", "training")),
             source=meta.get("source", ""),
             source_shape=meta.get("source_shape", ""),
@@ -627,5 +724,8 @@ class H3RefMod:
             tags=list(meta.get("tags", [])),
             description=str(meta.get("description", "") or ""),
             concept_type=str(meta.get("concept_type", "generic") or "generic"),
+            config=config if isinstance(config, dict) else {},
+            path=path_no_ext,
+            sample_rate=int(meta.get("sample_rate", 32000)),
         )
 

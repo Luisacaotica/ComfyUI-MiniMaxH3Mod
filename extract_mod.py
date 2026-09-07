@@ -60,7 +60,8 @@ if ROOT not in sys.path:
 
 import torch
 
-from common import load_image_file, load_video_file, refmods_dir
+from common import (load_image_file, load_video_file, refmods_dir, mod_output_path,
+                    resize_ref as _resize_ref, ensure_min_size, snap_to_causal_grid)
 from core import (CONCEPT_TYPES, H3RefMod, aspect_grid, fit_token_budget,
                   normalize_mode, optimize_latent, pool_latent)
 
@@ -73,26 +74,6 @@ MAX_VIDEO_FRAMES = 60  # uniform sample cap; temporal pooling averages anyway
 
 def _load_image(path: str, max_edge: int) -> torch.Tensor:
     return load_image_file(path, max_edge=max_edge)
-
-
-def _resize_ref(image: torch.Tensor, short_edge: int, canvas=None) -> torch.Tensor:
-    """Aspect-preserving downscale (never upscale) to ``short_edge`` px; dims to /32.
-
-    When several refs are stacked into one mod they must share a single spatial
-    canvas, so ``canvas`` (tw, th) cover-crops each ref to it.
-    """
-    import comfy.utils
-    h, w = image.shape[1], image.shape[2]
-    scale = min(1.0, short_edge / min(h, w))
-    tw = max(32, round(w * scale / 32) * 32)
-    th = max(32, round(h * scale / 32) * 32)
-    crop = "disabled"
-    if canvas is not None:
-        tw, th = canvas
-        crop = "center"
-    samples = image[..., :3].movedim(-1, 1)
-    samples = comfy.utils.common_upscale(samples, tw, th, "lanczos", crop)
-    return samples.movedim(1, -1)
 
 
 def _load_video(path: str, max_edge: int, max_frames: int = MAX_VIDEO_FRAMES) -> torch.Tensor:
@@ -113,8 +94,9 @@ def main():
                     help="reference video path (repeatable)")
     ap.add_argument("--vae", required=True, help="MiniMax H3 video VAE .safetensors")
     ap.add_argument("--name", default=None, help="mod name (default: first source file stem)")
+    ap.add_argument("--subfolder", default="", help="optional subfolder inside models/refmods")
     ap.add_argument("--output", default=None,
-                    help="output dir (default: custom_nodes/ComfyUI-MiniMaxH3Mod/mods)")
+                    help="output dir (default: ComfyUI/models/refmods)")
     ap.add_argument("--mode", choices=["training", "encode", "full", "pooled"],
                     default="training",
                     help="training = compressed grid refined by --identity (default, good balance); encode = straight full-res VAE encode (~1K tokens/img); full/pooled = old names, still accepted")
@@ -207,7 +189,7 @@ def main():
     n_img = n_vid = 0
     for path in args.image:
         src = _load_image(path, load_max_edge)
-        src = _resize_ref(src, args.resolution, canvas)
+        src = ensure_min_size(_resize_ref(src, args.resolution, canvas))
         print(f"[extract] image {path}: {tuple(src.shape)} (mode={args.mode})")
         with torch.no_grad():
             z = vae.encode(src.to(device)).float().cpu()
@@ -229,7 +211,8 @@ def main():
             if args.latent_frames < n_src:
                 idx = torch.linspace(0, n_src - 1, args.latent_frames).round().long()
                 src = src[idx]
-        src = _resize_ref(src, args.resolution, canvas)
+        src = ensure_min_size(_resize_ref(src, args.resolution, canvas))
+        src = src[:snap_to_causal_grid(src.shape[0])]
         print(f"[extract] video {path}: {tuple(src.shape)} (mode={args.mode})")
         with torch.no_grad():
             z = vae.encode(src.to(device)).float().cpu()
@@ -279,7 +262,8 @@ def main():
         description=args.description.strip(),
         concept_type=args.concept_type,
     )
-    path = mod.save(os.path.join(out_dir, name))
+    mod.path = os.path.join(out_dir, name) if args.output else mod_output_path(name, args.subfolder)  # so Fix H3 RefMod Config can re-save in place
+    path = mod.save(mod.path)
     mb = latent.numel() * latent.element_size() / 1024 / 1024
     print(f"[extract] saved {kind} mod '{name}' "
           f"({mod.token_count} tokens, {mb:.2f} MB) -> {path}")

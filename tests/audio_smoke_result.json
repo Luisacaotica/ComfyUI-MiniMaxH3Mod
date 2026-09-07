@@ -1,0 +1,21 @@
+{
+  "checkpoint": "E:\\pinokio\\api\\comfy.git\\app\\models\\vae\\minimax_h3_audio_vae_fp32.safetensors",
+  "latent_shape": [
+    1,
+    32,
+    2,
+    20
+  ],
+  "tokens": 40,
+  "decoded_shape": [
+    1,
+    2,
+    16000
+  ],
+  "sample_rate": 32000,
+  "seconds_elapsed": 1.9553911999998945,
+  "peak_cuda_mib": 668.19287109375,
+  "native_layout": true,
+  "roundtrip_exact": true,
+  "finite": true
+}

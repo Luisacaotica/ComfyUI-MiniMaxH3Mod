@@ -1,0 +1,68 @@
+{
+  "scope": "Random small H3, float32, reference-input gradients only; no quality claim",
+  "gpu": "NVIDIA GeForce RTX 4060 Ti",
+  "ram_available_gib": 18.232921600341797,
+  "cuda_free_gib": 6.9091796875,
+  "results": [
+    {
+      "strategy": "direct",
+      "passed": true,
+      "loss": 1.3562798500061035,
+      "gradient_norm": 0.00016250013140961528,
+      "seconds": 0.12497129999974277,
+      "peak_cuda_mib": 20.560546875
+    },
+    {
+      "strategy": "checkpoint",
+      "passed": true,
+      "loss": 1.3562798500061035,
+      "gradient_norm": 0.00016250013140961528,
+      "seconds": 0.05420140000023821,
+      "peak_cuda_mib": 20.5673828125
+    },
+    {
+      "strategy": "saved_activations_cpu",
+      "passed": true,
+      "loss": 1.3562798500061035,
+      "gradient_norm": 0.00016250011685770005,
+      "seconds": 0.043250800000350864,
+      "peak_cuda_mib": 20.04248046875
+    }
+  ],
+  "checkpoint": {
+    "path": "E:/pinokio/api/comfy.git/app/models/unet/minimax_h3_fastvideo_vsa_datafree_1300step_4step_int8_convrot.safetensors",
+    "file_gib": 21.325978375971317,
+    "storage_gib_by_dtype": {
+      "F32": 0.017881959676742554,
+      "F16": 0.08129024505615234,
+      "BF16": 1.487912654876709,
+      "U8": 1.6763806343078613e-05,
+      "I8": 19.73876953125
+    },
+    "tensor_count": 1082,
+    "sample_tensor_names": [
+      "adaln_t_table",
+      "audio_patch_proj.bias",
+      "audio_patch_proj.weight",
+      "blocks.0.adaln_proj.linear.bias",
+      "blocks.0.adaln_proj.linear.weight",
+      "blocks.0.attn.k_norm.weight",
+      "blocks.0.attn.out_proj.comfy_quant",
+      "blocks.0.attn.out_proj.weight",
+      "blocks.0.attn.out_proj.weight_scale",
+      "blocks.0.attn.q_norm.weight",
+      "blocks.0.attn.qkv_proj.comfy_quant",
+      "blocks.0.attn.qkv_proj.weight"
+    ]
+  },
+  "eager_forward_max_error": 2.384185791015625e-07,
+  "synthetic_optimization_losses": [
+    1.3562798500061035,
+    1.356208086013794,
+    1.356135368347168,
+    1.3560618162155151,
+    1.3559870719909668,
+    1.355911135673523
+  ],
+  "model_weight_gradients_absent": true
+}

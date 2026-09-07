@@ -1,0 +1,55 @@
+{
+  "scope": "Random small H3, float32, reference-input gradients only; no quality claim",
+  "gpu": "NVIDIA GeForce RTX 4060 Ti",
+  "ram_available_gib": 18.193317413330078,
+  "cuda_free_gib": 6.9091796875,
+  "results": [
+    {
+      "strategy": "direct",
+      "passed": false,
+      "error": "one of the variables needed for gradient computation has been modified by an inplace operation: [torch.cuda.FloatTensor [48, 128]], which is output 0 of struct torch::autograd::CopySlices, is at version 20; expected version 16 instead. Hint: enable anomaly detection to find the operation that failed to compute its gradient, with torch.autograd.set_detect_anomaly(True, check_nan=False).",
+      "seconds": 0.36681640000006155,
+      "peak_cuda_mib": 20.306640625
+    },
+    {
+      "strategy": "checkpoint",
+      "passed": false,
+      "error": "Trying to backward through comfy_kitchen.rms_rope_split_half.default but no autograd formula was registered. Please use register_autograd to add one.",
+      "seconds": 0.07641329999933077,
+      "peak_cuda_mib": 20.7451171875
+    },
+    {
+      "strategy": "saved_activations_cpu",
+      "passed": false,
+      "error": "Trying to backward through comfy_kitchen.rms_rope_split_half.default but no autograd formula was registered. Please use register_autograd to add one.",
+      "seconds": 0.033332800000607676,
+      "peak_cuda_mib": 20.71630859375
+    }
+  ],
+  "checkpoint": {
+    "path": "E:/pinokio/api/comfy.git/app/models/unet/minimax_h3_fastvideo_vsa_datafree_1300step_4step_int8_convrot.safetensors",
+    "file_gib": 21.325978375971317,
+    "storage_gib_by_dtype": {
+      "F32": 0.017881959676742554,
+      "F16": 0.08129024505615234,
+      "BF16": 1.487912654876709,
+      "U8": 1.6763806343078613e-05,
+      "I8": 19.73876953125
+    },
+    "tensor_count": 1082,
+    "sample_tensor_names": [
+      "adaln_t_table",
+      "audio_patch_proj.bias",
+      "audio_patch_proj.weight",
+      "blocks.0.adaln_proj.linear.bias",
+      "blocks.0.adaln_proj.linear.weight",
+      "blocks.0.attn.k_norm.weight",
+      "blocks.0.attn.out_proj.comfy_quant",
+      "blocks.0.attn.out_proj.weight",
+      "blocks.0.attn.out_proj.weight_scale",
+      "blocks.0.attn.q_norm.weight",
+      "blocks.0.attn.qkv_proj.comfy_quant",
+      "blocks.0.attn.qkv_proj.weight"
+    ]
+  }
+}

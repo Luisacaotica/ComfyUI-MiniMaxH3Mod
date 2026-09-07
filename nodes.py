@@ -9,6 +9,9 @@ nodes.py — ComfyUI nodes for MiniMax H3 "RefMod" (no-training reference mods)
   MiniMaxH3RefModApply         — inject the bundle into a MINIMAX_H3_COND conditioning or the
                                  built-in ComfyUI CONDITIONING (one node, old ApplyCond
                                  workflows auto-migrate via node replacement)
+  MiniMaxH3RefModStepCurve     — per-denoising-step ref strength envelope (MODEL -> MODEL)
+  MiniMaxH3RefModConfig        — fix tuned Apply/Step-Curve settings into a mod's metadata so
+                                 the Apply/Step Curve ``override`` toggle can reuse them
 
 Mods are stored in ``models/refmods/`` (created on first run, next to loras/
 and unet/); mods saved by older versions in the pack's ``mods/`` folder still
@@ -29,12 +32,13 @@ weak_reference) multiplied with each loader row's strength.
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
+import itertools
+from contextvars import ContextVar
 import json
+import math
+import ntpath
 import os
 import random
-import sys
 from dataclasses import replace
 from typing import Callable, Dict, List, Optional
 
@@ -45,13 +49,22 @@ import comfy.patcher_extension
 import comfy.utils
 import folder_paths
 from comfy_api.latest import io
+from comfy_execution.validation import validate_node_input
+from comfy_extras.nodes_audio import vae_decode_audio
+from .library import register_routes
 
 from .common import (
     list_media_files,
     load_image_file,
     load_video_file,
     refmods_dir,
+    mod_output_path,
+    resize_ref as _resize_ref,
+    snap_to_causal_grid as _snap_to_causal_grid,
+    ensure_min_size as _ensure_min_size,
 )
+from . import continuum_bridge
+from .audio import make_audio_mod
 from .core import (
     CONCEPT_TYPES,
     CURVE_DIRECTIONS,
@@ -59,10 +72,12 @@ from .core import (
     H3RefMod,
     _blur_latent,
     aspect_grid,
+    curve_strengths,
     curve_value_at,
     fit_token_budget,
     normalize_mode,
     optimize_latent,
+    optimize_latent_multi,
     pool_latent,
     read_refmod_meta,
 )
@@ -76,14 +91,17 @@ from .debug_grid import (
 _PACK_DIR = os.path.dirname(os.path.abspath(__file__))
 LEGACY_MODS_DIR = os.path.join(_PACK_DIR, "mods")  # pre-models/refmods storage, still read
 _MOD_CACHE: Dict[str, H3RefMod] = {}
+_MOD_CACHE_STAMPS = {}
+_MOD_CACHE_BYTES = 256 * 1024 * 1024
 _MOD_CACHE_MAX = 24          # cap: never pin more mods in RAM than this (FIFO eviction)
 _MOD_LIST_CACHE_KEY = None   # (dirs, mtimes, sizes) signature of the last _list_mod_names() scan
 _MOD_LIST_CACHE_VAL = None
+_MOD_SKIP_DIRS = {"graph_presets", ".git", "__pycache__"}
 
 # Mod storage lives in ComfyUI's models/ tree (created on first run) and is
 # registered as a first-class folder type so it shows up next to loras/unet.
 try:
-    folder_paths.add_model_folder_path("refmods", refmods_dir())
+    folder_paths.add_model_folder_path("refmods", os.path.join(folder_paths.models_dir, "refmods"))
 except Exception:
     pass
 
@@ -100,49 +118,20 @@ RETENTION = {
 # ComfyUI-MiniMaxH3 pack integration
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _pack_dir() -> str:
-    custom_nodes = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(custom_nodes, "ComfyUI-MiniMaxH3")
-
-
-def _h3_pack_submodule(subpath: str):
-    """
-    Import a submodule of the ComfyUI-MiniMaxH3 pack.
-
-    ComfyUI registers custom node folders in sys.modules under their absolute
-    path with dots replaced by ``_x_``, so the normal import statement can't
-    reference it.  Prefer the already-loaded instance (shared VAE caches);
-    fall back to loading the pack under a clean name if it hasn't loaded yet.
-    """
-    pack_dir = os.path.abspath(_pack_dir())
-    if not os.path.isdir(pack_dir):
-        raise RuntimeError(
-            "ComfyUI-MiniMaxH3 pack not found at " + pack_dir + ". "
-            "Install it first (ComfyUI Manager: search 'MiniMax H3', or git "
-            "clone https://github.com/xiaolibai-sys/ComfyUI-MiniMaxH3 into "
-            "custom_nodes/) — it is required for the av_encoder input on "
-            "Extract H3 RefMod and the pack-conditioning Apply H3 RefMod node."
-        )
-    for name, mod in list(sys.modules.items()):
-        path = getattr(mod, "__file__", None) or getattr(mod, "__path__", None)
-        if path is None:
-            continue
-        try:
-            root = os.path.abspath(path if isinstance(path, str) else path[0])
-        except Exception:
-            continue
-        if root.startswith(pack_dir + os.sep) or root == pack_dir:
-            try:
-                return importlib.import_module(name + "." + subpath)
-            except ImportError:
-                pass
-    module_name = "ComfyUI_MiniMaxH3"
-    spec = importlib.util.spec_from_file_location(
-        module_name, os.path.join(pack_dir, "__init__.py"))
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = mod
-    spec.loader.exec_module(mod)
-    return importlib.import_module(module_name + "." + subpath)
+def _resolve_visual_vae(vae=None, av_encoder=None):
+    """Use native ComfyUI VAE loading for legacy VAERef connections too."""
+    if vae is not None:
+        return vae
+    if av_encoder is None:
+        raise ValueError("Connect the MiniMax H3 video VAE to vae.")
+    import comfy.sd
+    path = os.fspath(av_encoder.video_path)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"H3 video VAE not found: {path}")
+    state, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
+    loaded = comfy.sd.VAE(sd=state, metadata=metadata)
+    loaded.throw_exception_if_invalid()
+    return loaded
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -150,14 +139,14 @@ def _h3_pack_submodule(subpath: str):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _mod_search_dirs() -> List[str]:
-    dirs = [refmods_dir()]
-    root_models_mods = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "models", "mods")
-    for d in (root_models_mods, LEGACY_MODS_DIR):
+    dirs = list(folder_paths.get_folder_paths("refmods"))
+    for d in (os.path.join(folder_paths.models_dir, "refmods"), os.path.join(folder_paths.models_dir, "mods"),
+              os.path.join(os.path.dirname(_PACK_DIR), "models", "mods"), LEGACY_MODS_DIR,
+              os.path.join(folder_paths.models_dir, "audio_refmods")):
         if d not in dirs and os.path.isdir(d):
             dirs.append(d)
     return dirs
+
 
 
 def _list_mod_names() -> List[str]:
@@ -172,56 +161,178 @@ def _list_mod_names() -> List[str]:
     via cheap os.stat, not by re-reading every safetensors header).
     """
     global _MOD_LIST_CACHE_KEY, _MOD_LIST_CACHE_VAL
-    sig = []
-    for d in _mod_search_dirs():
-        if not os.path.isdir(d):
-            continue
-        for fn in sorted(os.listdir(d)):
-            if not fn.endswith(".safetensors"):
-                continue
-            try:
-                st = os.stat(os.path.join(d, fn))
-                sig.append(f"{fn}:{st.st_size}:{int(st.st_mtime)}")
-            except OSError:
-                pass
-    key = "\n".join(sig)
+    dirs = _mod_search_dirs()
+    sig, candidates = [], []
+    for d in dirs:
+        for root, subdirs, files in os.walk(d):
+            subdirs[:] = sorted(s for s in subdirs if s not in _MOD_SKIP_DIRS)
+            for fn in sorted(files):
+                if not fn.endswith(".safetensors"):
+                    continue
+                path = os.path.join(root, fn)
+                stem = path[:-len(".safetensors")]
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                sidecar = None
+                try:
+                    js = os.stat(stem + ".json")
+                    sidecar = (js.st_size, js.st_mtime_ns)
+                except OSError:
+                    pass
+                sig.append((path, st.st_size, st.st_mtime_ns, sidecar))
+                name = os.path.relpath(stem, d).replace("\\", "/")
+                candidates.append((name, stem))
+    key = (tuple(dirs), tuple(sig))
     if key == _MOD_LIST_CACHE_KEY:
         return _MOD_LIST_CACHE_VAL
     names = set()
-    for d in _mod_search_dirs():
-        if not os.path.isdir(d):
+    seen = set()
+    for name, stem in candidates:
+        if name in seen:
             continue
-        for fn in os.listdir(d):
-            if not fn.endswith(".safetensors"):
-                continue
-            stem = fn[:-len(".safetensors")]
-            meta = read_refmod_meta(os.path.join(d, stem))
-            if meta is not None and meta.get("kind") in ("image", "video"):
-                names.add(stem)
+        seen.add(name)  # match _find_mod_path's first-search-directory priority
+        meta = read_refmod_meta(stem)
+        if isinstance(meta, dict) and meta.get("kind") in ("image", "video", "audio"):
+            names.add(name)
     _MOD_LIST_CACHE_KEY, _MOD_LIST_CACHE_VAL = key, sorted(names)
     return _MOD_LIST_CACHE_VAL
 
 
+def _normalize_mod_name(name) -> str:
+    if name is None:
+        return ""
+    name = str(name).replace("\\", "/")
+    return "" if name in ("", "None", "(none)") else name
+
+
 def _find_mod_path(name: str) -> str:
-    for d in _mod_search_dirs():
+    name = _normalize_mod_name(name)
+    if (not name or ntpath.splitdrive(name)[0] or name.startswith("/")
+            or ".." in name.split("/")
+            or any(part in _MOD_SKIP_DIRS for part in name.split("/"))):
+        raise ValueError(f"RefMod '{name}': expected a relative mod name under models/refmods/.")
+    dirs = _mod_search_dirs()
+    for d in dirs:
         p = os.path.join(d, name)
+        root = os.path.realpath(d)
+        target = os.path.realpath(p + ".safetensors")
+        try:
+            contained = os.path.commonpath((root, target)) == root
+        except ValueError:  # a symlink can point to another Windows drive
+            contained = False
+        if not contained:
+            continue
         if os.path.isfile(p + ".safetensors"):
-            return p
+            return os.path.abspath(p)
     raise FileNotFoundError(
         f"RefMod '{name}' not found. Searched:\n" +
-        "\n".join(f"  - {d}/{name}.safetensors" for d in _mod_search_dirs()))
+        "\n".join(f"  - {d}/{name}.safetensors" for d in dirs))
+
+
+def _file_stamp(path):
+    stamps = []
+    for ext in (".safetensors", ".json"):
+        try:
+            st = os.stat(path + ext)
+            stamps.append((st.st_size, st.st_mtime_ns, st.st_ctime_ns))
+        except FileNotFoundError:
+            stamps.append(None)
+    return (os.path.normcase(os.path.abspath(path)), *stamps)
+
+
+def _cache_mod(path, mod):
+    key = os.path.normcase(os.path.abspath(path))
+    _MOD_CACHE[key] = mod
+    _MOD_CACHE_STAMPS[key] = _file_stamp(path)
+    while _MOD_CACHE and (len(_MOD_CACHE) > _MOD_CACHE_MAX or
+            sum(m.latent.numel() * m.latent.element_size() for m in _MOD_CACHE.values()) > _MOD_CACHE_BYTES):
+        evicted = next(iter(_MOD_CACHE))
+        _MOD_CACHE.pop(evicted)
+        _MOD_CACHE_STAMPS.pop(evicted, None)
 
 
 def _load_mod(name: str) -> H3RefMod:
-    if name in _MOD_CACHE:
-        return _MOD_CACHE[name]
-    mod = H3RefMod.load(_find_mod_path(name), device="cpu")
-    _MOD_CACHE[name] = mod
-    if len(_MOD_CACHE) > _MOD_CACHE_MAX:
-        # FIFO eviction: pop the oldest-loaded mod so a long session loading
-        # many different mods doesn't accumulate every one of them in RAM
-        _MOD_CACHE.pop(next(iter(_MOD_CACHE)))
+    path = _find_mod_path(name)
+    key = os.path.normcase(path)
+    if key in _MOD_CACHE and _MOD_CACHE_STAMPS.get(key) == _file_stamp(path):
+        return _MOD_CACHE[key]
+    _MOD_CACHE.pop(key, None)
+    _MOD_CACHE_STAMPS.pop(key, None)
+    mod = H3RefMod.load(path, device="cpu")
+    _cache_mod(path, mod)
     return mod
+
+
+def _mods_changed(kwargs):
+    stamps = []
+    for field, value in sorted(kwargs.items()):
+        if not field.startswith("mod_"):
+            continue
+        if value is None:
+            return float("nan")
+        name = _normalize_mod_name(value)
+        if name:
+            try:
+                stamps.append(_file_stamp(_find_mod_path(name)))
+            except (FileNotFoundError, ValueError):
+                stamps.append((name, "missing"))
+    return tuple(stamps)
+
+
+def _check_token_budget(mods, budget):
+    if isinstance(budget, bool) or not isinstance(budget, (int, float)) or not math.isfinite(budget) or int(budget) != budget:
+        raise ValueError("Token budget must be a finite integer.")
+    total = sum(mod.token_count for mod, strength in mods if strength > 0)
+    if budget < 0:
+        raise ValueError("Token budget cannot be negative.")
+    if budget and total > budget:
+        raise ValueError(f"RefMods require {total} tokens after copies; budget is {budget}. Reduce copies or selected mods.")
+    return total
+
+
+def _number_error(field, value, kind, options):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return f"RefMod input '{field}': expected a finite {kind}."
+    if kind == "INT" and int(value) != value:
+        return f"RefMod input '{field}': expected an integer."
+    if value < options["min"] or value > options["max"]:
+        return f"RefMod input '{field}': expected {options['min']}..{options['max']}, got {value}."
+    return None
+
+
+def _check_loader_numbers(required, kwargs):
+    for field, (kind, options) in required.items():
+        if kind in ("INT", "FLOAT") and field in kwargs:
+            error = _number_error(field, kwargs[field], kind, options)
+            if error:
+                raise ValueError(error)
+
+
+
+def _validate_mod_inputs(required, input_types, kwargs):
+    linked = input_types or {}
+    for field, (expected, _options) in required.items():
+        is_mod = isinstance(expected, list)
+        if field in linked:
+            received = linked[field]
+            if isinstance(received, list):
+                received = "COMBO"
+            allowed = "STRING,COMBO" if is_mod else expected
+            if not validate_node_input(received, allowed):
+                return f"RefMod input '{field}': expected {allowed}, got {received}."
+            continue  # upstream values are resolved at execution, not queue time
+        if expected in ("INT", "FLOAT") and field in kwargs and kwargs[field] is not None:
+            error = _number_error(field, kwargs[field], expected, _options)
+            if error:
+                return error
+        if is_mod:
+            name = _normalize_mod_name(kwargs.get(field))
+            if name and name not in expected:
+                return (f"RefMod input '{field}': '{name}' not found in models/refmods/ "
+                        "or legacy mods/ folders. Run Extract H3 RefMod first.")
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -303,86 +414,6 @@ def _save_graph_preset(name: str, spec, img=None) -> str:
     return safe
 
 
-def _resize_ref(image, short_edge: int, canvas=None):
-    """Aspect-preserving downscale (never upscale) to ``short_edge`` px; dims to /32.
-
-    When several refs are stacked into one mod they must share a single spatial
-    canvas, so ``canvas`` (tw, th) cover-crops each ref to it (like the official
-    node's follower keyframes).  Mirrors the official ref2video node: refs are
-    resized before VAE encode, so the stored latent rides the same
-    full-resolution path the model was trained with (the pooled path below is
-    the cheap "thumbnail" alternative).
-    """
-    h, w = image.shape[1], image.shape[2]
-    if h <= 0 or w <= 0:
-        raise ValueError(
-            f"_resize_ref: source has an empty frame ({h}x{w}) before any "
-            f"resize — the reference itself is invalid.")
-    scale = min(1.0, short_edge / min(h, w))
-    tw = max(32, round(w * scale / 32) * 32)
-    th = max(32, round(h * scale / 32) * 32)
-    crop = "disabled"
-    if canvas is not None:
-        tw, th = canvas
-        crop = "center"
-    if tw <= 0 or th <= 0:
-        raise ValueError(
-            f"_resize_ref: computed a zero-size resize target ({tw}x{th}) "
-            f"for a {h}x{w} source (short_edge={short_edge}, canvas={canvas}). "
-            f"This should be impossible — please report this shape.")
-    samples = image[..., :3].movedim(-1, 1)
-    samples = comfy.utils.common_upscale(samples, tw, th, "lanczos", crop)
-    if samples.shape[2] <= 0 or samples.shape[3] <= 0:
-        raise ValueError(
-            f"_resize_ref: common_upscale produced an empty result "
-            f"{tuple(samples.shape)} from a {h}x{w} source targeting "
-            f"{tw}x{th} (crop={crop}, canvas={canvas}). This points to a bug "
-            f"in comfy.utils.common_upscale for this input, not in RefMod's "
-            f"own math.")
-    return samples.movedim(1, -1)
-
-
-def _snap_to_causal_grid(n_frames: int) -> int:
-    """Round a video frame count down to the nearest valid ``4k + 1``.
-
-    MiniMax H3's video VAE is causal: it compresses time in groups of 4 with
-    one leading keyframe, so it only accepts pixel-frame counts of the form
-    4k+1 (1, 5, 9, 13, 17, ...). Anything else makes its internal temporal
-    chunker produce a zero-length chunk list and crash on
-    ``torch.cat(): expected a non-empty list of Tensors``. The official
-    ref2video path already trims to this grid before encoding; RefMod
-    extraction previously didn't, so an arbitrary frame_load_cap/
-    select_every_nth combo from a video loader would break it.
-    """
-    if n_frames <= 1:
-        return 1
-    return ((n_frames - 1) // 4) * 4 + 1
-
-
-def _ensure_min_size(image, floor: int = 320):
-    """Upscale (never downscale) so both spatial dims are >= ``floor`` px.
-
-    The MiniMax H3 VAE encodes with internal tiled_encode (~256px tiles). A
-    reference smaller than the tile size in one dimension can make the tiler
-    compute a zero-size edge tile, which crashes deep inside conv_in with a
-    cryptic 'Expected 4D or 5D... but got [1,3,1,0,W]' error. This applies
-    regardless of extraction mode ('encode' already resizes down to
-    ref_resolution but never guarantees a floor; 'training' now resizes to
-    the same cap, also without a floor), so it's a separate, unconditional
-    safety net right before encode.
-    """
-    import comfy.utils
-    h, w = image.shape[1], image.shape[2]
-    if h >= floor and w >= floor:
-        return image
-    scale = floor / min(h, w)
-    tw = max(floor, round(w * scale / 32) * 32)
-    th = max(floor, round(h * scale / 32) * 32)
-    samples = image[..., :3].movedim(-1, 1)
-    samples = comfy.utils.common_upscale(samples, tw, th, "lanczos", "disabled")
-    return samples.movedim(1, -1)
-
-
 def _normalize_mask_batch(mask, label: str = "mask") -> torch.Tensor:
     """Canonicalize a MASK input to ``[N, H, W]`` float32 in [0, 1]."""
     if mask is None:
@@ -398,31 +429,11 @@ def _normalize_mask_batch(mask, label: str = "mask") -> torch.Tensor:
     return mask.float().clamp(0.0, 1.0)
 
 
-def _resize_mask(mask: torch.Tensor, target_h: int, target_w: int) -> torch.Tensor:
+def _resize_mask(mask: torch.Tensor, target_h: int, target_w: int, crop="disabled") -> torch.Tensor:
     """Resize a ``[T, H, W]`` mask to ``target_h x target_w`` (bilinear)."""
     samples = mask.unsqueeze(1)  # [T, 1, H, W]
-    samples = comfy.utils.common_upscale(samples, target_w, target_h, "bilinear", "disabled")
+    samples = comfy.utils.common_upscale(samples, target_w, target_h, "bilinear", crop)
     return samples.squeeze(1).clamp(0.0, 1.0)
-
-
-def _blur_latent(z: torch.Tensor, factor: int = 8) -> torch.Tensor:
-    """Heavy spatial low-pass: downsample then upsample back.
-
-    Used as the suppression target instead of random noise. A VAE latent's
-    channels are correlated (it's not iid per-pixel noise in this space), so
-    feeding the model raw torch.randn() as a "suppressed" reference isn't
-    read as absence — it's read as real, garbled content, and gets rendered
-    as an actual (wrong) texture: the woven/static pattern is what
-    out-of-distribution noise looks like once a diffusion model tries to
-    make sense of it as a reference. A blurred copy of the real latent stays
-    on the manifold (smooth, plausible) while discarding the specific
-    structure (a skyline, a treeline) that was dictating unwanted content.
-    """
-    t, h, w = z.shape[2], z.shape[3], z.shape[4]
-    sh, sw = max(1, h // factor), max(1, w // factor)
-    down = F.adaptive_avg_pool3d(z.float(), (t, sh, sw))
-    up = F.interpolate(down, size=(t, h, w), mode="trilinear", align_corners=False)
-    return up
 
 
 def _mask_latent(z: torch.Tensor, mask_px: torch.Tensor, background_retention: float,
@@ -513,6 +524,8 @@ def _resolve_folder(folder: str) -> str:
 
 
 def _summarize(mod: H3RefMod) -> str:
+    if mod.kind == "audio":
+        return f"{mod.name}: audio, {mod.latent_t / 40:.2f}s, {mod.token_count} tokens"
     mb = mod.latent.numel() * mod.latent.element_size() / 1024 / 1024
     return (f"'{mod.name}' {mod.mode} {mod.kind} {tuple(mod.latent.shape)} "
             f"({mod.token_count} tokens, {mb:.2f} MB)")
@@ -539,7 +552,26 @@ def _info_lines(mod: H3RefMod) -> List[str]:
     ]
 
 
-def _ref_blocks(mods, retention, curve=None, seed=-1) -> List[Dict]:
+def _saved_curve(cfg: Optional[Dict], key: str) -> Optional[tuple]:
+    """(direction, shape, value) from a mod's saved config entry, or None.
+
+    Validates against the known curve names so hand-edited/foreign metadata
+    can't inject junk into the Apply or Step Curve nodes — anything invalid
+    just falls back to the manual widgets.
+    """
+    entry = (cfg or {}).get(key)
+    if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+        return None
+    direction, shape, value = entry
+    if direction not in CURVE_DIRECTIONS or shape not in CURVE_SHAPES:
+        return None
+    try:
+        return (direction, shape, float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _ref_blocks(mods, retention, curve=None, seed=-1, scramble_mode="legacy_subset", scramble_keep=1, max_total_tokens=0) -> List[Dict]:
     """Ref blocks for a loader bundle, scaled by row strength x retention.
 
     ``retention`` is a master strength multiplier: a float 0-1 (1.0 =
@@ -565,54 +597,96 @@ def _ref_blocks(mods, retention, curve=None, seed=-1) -> List[Dict]:
     if int(seed) >= 0 and len(items) > 1:
         rng = random.Random(int(seed))
         rng.shuffle(items)
-        keep = rng.randint(max(1, len(items) // 2), len(items))
-        items = items[:keep]
+        if scramble_mode == "legacy_subset":
+            keep = rng.randint(max(1, len(items) // 2), len(items))
+            items = items[:keep]
+        elif scramble_mode == "subset":
+            items = items[:max(1, int(scramble_keep))]
+        elif scramble_mode != "shuffle":
+            raise ValueError("Unknown scramble mode.")
         print(f"[MiniMaxH3RefModApply] scramble seed={int(seed)}: "
               f"{len(mods)} refs -> kept {len(items)} (order shuffled)")
+    _check_token_budget(items, max_total_tokens)
     blocks = []
+    notes = []
+    summaries = []  # (name, effective average multiplier)
     for mod, strength in items:
         eff = min(1.0, max(0.0, strength * factor))
-        block = mod.ref_block(eff, curve=curve)
+        used_curve = curve
+        if (mod.latent_t <= 1 and isinstance(curve, tuple) and len(curve) == 3
+                and isinstance(curve[0], str) and str(curve[0]) != "constant"):
+            # curve directions run across a mod's own ref frames, which is
+            # meaningless on single-frame mods — previously this silently
+            # no-op'ed and identity mods always injected at full strength.
+            # Now: treat curve_value as a plain strength cap instead.
+            cap = max(0.0, min(1.0, float(curve[2])))
+            if cap < eff:
+                notes.append(
+                    f"'{mod.name}' is image-kind (1 frame): direction "
+                    f"'{curve[0]}' has no effect; using curve_value "
+                    f"{cap:.2f} as its strength cap instead")
+                eff = min(eff, cap)
+            used_curve = None
+        block = mod.ref_block(eff, curve=used_curve)
         if block is not None:
+            # marker the step-curve wrapper uses to tell this ref apart from
+            # native ref2va refs (original input video, keyframes, ...) so it
+            # only ever re-mixes what the Apply node injected
+            block["refmod"] = True
             blocks.append(block)
+        avg = eff
+        if used_curve is not None and mod.latent_t > 1:
+            strengths = curve_strengths(used_curve, mod.latent_t)
+            if strengths:
+                avg = eff * (sum(strengths) / len(strengths))
+        summaries.append((mod.name, avg))
+    for line in notes:
+        print(f"[MiniMaxH3RefModApply] note: {line}")
+    if summaries and any(s < 0.999 for _n, s in summaries):
+        detail = ", ".join(f"{n}@{s:.2f}" for n, s in summaries)
+        weak = min(s for _n, s in summaries) < 0.3
+        print(f"[MiniMaxH3RefModApply] effective ref strength (row x retention"
+              f"{' x curve-mean' if curve is not None else ''}): {detail}"
+              + ("  <- below 0.30, expect a weak insertion" if weak else ""))
     return blocks
 
 
-def _make_step_wrapper(spec) -> Callable:
-    """DIFFUSION_MODEL wrapper re-mixing every ref latent per denoising step.
+_STEP_WRAPPER_SEQ = itertools.count()
 
-    The Apply node's frame curve is baked into the ref latents once, before
-    sampling.  This wrapper re-scales them per step instead: it caches the
-    pristine latents (and blurred copies) on the first forward, then each
-    step mixes toward the blur with ``curve_value_at(spec, 1 - sigma)`` — the
-    same direction/shape/value envelope as the frame curve, running over the
-    denoise timeline (0 = first step, high sigma) instead of the video's.
-    ``cond_video_latents`` is re-read from the payload every forward, so
-    replacing the list per step is all it takes; the packed layout stays
-    valid because only values change, never shapes.
-    """
-    state = {"pristine": None, "blurred": None}
 
+def _make_step_wrapper(spec, progress=None) -> Callable:
+    """Mix only marked refs in this forward; never retain or mutate a payload."""
     def wrapper(executor, x, timestep, context, transformer_options, **kwargs):
-        payload = kwargs.get("minimax_payload") or {}
-        cond = payload.get("cond_video_latents")
-        if cond:
-            if state["pristine"] is None:
-                state["pristine"] = [z.clone() for z in cond]
-                state["blurred"] = [_blur_latent(z) for z in state["pristine"]]
-            sigma = float((timestep.flatten()[0] / 1000.0).clamp(0.0, 1.0))
-            s = curve_value_at(spec, 1.0 - sigma)
-            if s >= 1.0:
-                payload["cond_video_latents"] = state["pristine"]
-            else:
-                s = max(0.0, min(1.0, s))
-                payload["cond_video_latents"] = [
-                    s * p + (1.0 - s) * b
-                    for p, b in zip(state["pristine"], state["blurred"])
-                ]
-        return executor(x, timestep, context, transformer_options, **kwargs)
-
+        payload = kwargs.get("minimax_payload")
+        if not payload or not any(r.get("refmod") for r in payload.get("refs", [])):
+            return executor(x, timestep, context, transformer_options, **kwargs)
+        start = progress.get() if progress is not None else 1000.0
+        sigma = min(1.0, max(0.0, float(timestep.flatten()[0]) / max(start, 1e-8)))
+        strength = min(1.0, max(0.0, curve_value_at(spec, 1.0 - sigma)))
+        if strength >= 1.0:
+            return executor(x, timestep, context, transformer_options, **kwargs)
+        mixed = dict(payload)
+        for field, latent_key in (("cond_video_latents", "latent"),
+                                  ("cond_audio_latents", "audio_latent")):
+            cond = payload.get(field)
+            if not cond:
+                continue
+            out = list(cond)
+            index = sum(k.get(latent_key) is not None for k in payload.get("keyframes", []))
+            for ref in payload.get("refs", []):
+                if ref.get(latent_key) is None:
+                    continue
+                if index >= len(out):
+                    raise ValueError("RefMod Step Curve: reference layout does not match conditioning latents.")
+                if ref.get("refmod"):
+                    z = out[index]
+                    out[index] = strength * z + (1.0 - strength) * _blur_latent(z)
+                index += 1
+            mixed[field] = out
+        return executor(x, timestep, context, transformer_options,
+                        **dict(kwargs, minimax_payload=mixed))
     return wrapper
+
 
 
 def _prompt_hint(loads) -> str:
@@ -663,7 +737,7 @@ class MiniMaxH3RefModsLoader:
                            "copies = noticeably stronger reference, but each copy costs its full "
                            "token count in every DiT block, so it slows down inference and eats "
                            "VRAM — 2-3 copies is the sweet spot, 10x will be very slow."})
-        return {"required": required}
+        return {"required": required, "optional": {"max_total_tokens": ("INT", {"default": 0, "min": 0, "max": 1048576})}}
 
     RETURN_TYPES = ("H3_REF_MODS", "STRING")
     RETURN_NAMES = ("mods", "prompt_hint")
@@ -671,27 +745,28 @@ class MiniMaxH3RefModsLoader:
     CATEGORY = "MiniMax-H3/mod"
 
     @classmethod
-    def VALIDATE_INPUTS(cls, **kwargs):
-        available = set(_list_mod_names())
-        for i in range(1, cls.MAX_SLOTS + 1):
-            name = str(kwargs.get(f"mod_{i}", cls.NONE))
-            if name and name != cls.NONE and name not in available:
-                return (f"RefMod slot {i}: '{name}' not found in mods/. "
-                        "Run Extract H3 RefMod first.")
-        return True
+    def VALIDATE_INPUTS(cls, input_types=None, **kwargs):
+        schema = cls.INPUT_TYPES()
+        return _validate_mod_inputs({**schema["required"], **schema.get("optional", {})}, input_types, kwargs)
 
-    def load(self, show_info=False, **kwargs):
+    @classmethod
+    def IS_CHANGED(cls, show_info=False, **kwargs):
+        return _mods_changed(kwargs)
+
+    def load(self, show_info=False, max_total_tokens=0, **kwargs):
+        _check_loader_numbers(self.INPUT_TYPES()["required"], kwargs)
         rows = []  # (mod, strength, copies)
         for i in range(1, self.MAX_SLOTS + 1):
-            name = str(kwargs.get(f"mod_{i}", self.NONE))
+            name = _normalize_mod_name(kwargs.get(f"mod_{i}"))
             strength = float(kwargs.get(f"strength_{i}", 1.0))
-            if not name or name == self.NONE or strength <= 0.0:
+            if not name or strength <= 0.0:
                 continue
             rows.append((_load_mod(name), min(1.0, max(0.0, strength)),
                          int(kwargs.get(f"copies_{i}", 1))))
         loads = []
         for mod, strength, copies in rows:
             loads.extend([(mod, strength)] * copies)
+        _check_token_budget(loads, max_total_tokens)
         if loads:
             print("[MiniMaxH3RefModsLoader] " + ", ".join(
                 f"{m.name}@{s:.2f}" + (f" x{c}" if c > 1 else "")
@@ -744,7 +819,7 @@ class MiniMaxH3RefModsAxis:
                 "tooltip": "Signed strength: negative uses mod_a, positive uses mod_b, 0 skips the "
                            "row. The magnitude is the reference strength (same 0-1 math as "
                            "Load H3 RefMods), so -0.5 injects mod_a at half strength."})
-        return {"required": required}
+        return {"required": required, "optional": {"max_total_tokens": ("INT", {"default": 0, "min": 0, "max": 1048576})}}
 
     RETURN_TYPES = ("H3_REF_MODS", "STRING")
     RETURN_NAMES = ("mods", "prompt_hint")
@@ -752,27 +827,27 @@ class MiniMaxH3RefModsAxis:
     CATEGORY = "MiniMax-H3/mod"
 
     @classmethod
-    def VALIDATE_INPUTS(cls, **kwargs):
-        available = set(_list_mod_names())
-        for i in range(1, cls.MAX_SLOTS + 1):
-            for side in ("a", "b"):
-                name = str(kwargs.get(f"mod_{side}_{i}", cls.NONE))
-                if name and name != cls.NONE and name not in available:
-                    return (f"RefMod slot {i} ({side}): '{name}' not found in mods/. "
-                            "Run Extract H3 RefMod first.")
-        return True
+    def VALIDATE_INPUTS(cls, input_types=None, **kwargs):
+        schema = cls.INPUT_TYPES()
+        return _validate_mod_inputs({**schema["required"], **schema.get("optional", {})}, input_types, kwargs)
 
-    def load(self, show_info=False, **kwargs):
+    @classmethod
+    def IS_CHANGED(cls, show_info=False, **kwargs):
+        return _mods_changed(kwargs)
+
+    def load(self, show_info=False, max_total_tokens=0, **kwargs):
+        _check_loader_numbers(self.INPUT_TYPES()["required"], kwargs)
         loads = []
         for i in range(1, self.MAX_SLOTS + 1):
             value = float(kwargs.get(f"value_{i}", 0.0))
             if abs(value) < 1e-6:
                 continue
             side = "b" if value > 0 else "a"
-            name = str(kwargs.get(f"mod_{side}_{i}", self.NONE))
-            if not name or name == self.NONE:
+            name = _normalize_mod_name(kwargs.get(f"mod_{side}_{i}"))
+            if not name:
                 continue
             loads.append((_load_mod(name), min(1.0, abs(value))))
+        _check_token_budget(loads, max_total_tokens)
         if loads:
             print("[MiniMaxH3RefModsAxis] " + ", ".join(
                 f"{m.name}@{s:+.2f}" for m, s in loads)
@@ -831,6 +906,13 @@ class MiniMaxH3RefModApply(io.ComfyNode):
                             "(core MiniMaxH3ReferenceToVideo)."),
                 io.Custom("H3_REF_MODS").Input("mods",
                     tooltip="Bundle from Load H3 RefMods / Load H3 RefMod Axis / Extract H3 RefMod."),
+                io.Boolean.Input("override", default=False,
+                    tooltip="Use the config fixed into the mods' own metadata (by 'Fix H3 RefMod "
+                            "Config') instead of the widgets below: retention + curve come from "
+                            "the first mod in the bundle that carries one. Handy for sharing mods "
+                            "whose magic settings took real tuning. Off (default) = use the manual "
+                            "parameters. If no mod has a saved config it falls back to the manual "
+                            "parameters and prints a note."),
                 io.Float.Input("retention", default=1.0, min=0.0, max=1.0, step=0.01,
                     tooltip="Master reference strength, multiplied with each loader row's "
                              "strength. MiniMax retention levels: 1.0 = fully_preserved, "
@@ -838,18 +920,18 @@ class MiniMaxH3RefModApply(io.ComfyNode):
                              "style/attributes, not identity), 0.15 = weak_reference. "
                              "0 = no reference."),
                 io.Combo.Input("curve_direction", options=list(CURVE_DIRECTIONS),
-                    default="concept_at_end",
-                    tooltip="Where the concept shows up in the output (the mirror of the ref's "
-                            "strength envelope): 'concept_at_end' (default, was 'decrease') locks "
-                            "the ref's literal footage in at the START and releases it toward the "
-                            "end — the identity/character emerges in the second half, without "
-                            "dragging the ref's background in; 'concept_at_start' (was 'increase') "
-                            "opens free from the ref and locks onto it near the END — the concept "
-                            "shows early; 'concept_at_middle' peaks mid-video ([0..1..0] — the "
-                            "concept appears only in the middle); 'concept_at_ends' holds both "
-                            "ends with a mid dip ([1..0..1]); 'constant' keeps one strength for "
-                            "the whole video (flat at curve_value = 1.0, today's behavior). Old "
-                            "'decrease'/'increase' values saved in workflows still resolve."),
+                    default="constant",
+                    tooltip="Weighting envelope across THIS MOD'S OWN ref frames "
+                            "(stacked images / video-ref latent frames) — i.e. WHICH "
+                            "reference content dominates, NOT where the concept "
+                            "appears in the output video (ref tokens are not bound "
+                            "to output time; for output-timing control use the 'H3 "
+                            "RefMod Step Curve' node instead, which runs over the "
+                            "denoise timeline). 'constant' (default) = every ref "
+                            "frame at full strength (official-ref parity). The old "
+                            "default 'concept_at_end' fades early stack frames toward "
+                            "blur, roughly HALVING average strength on multi-frame "
+                            "mods. Old saved workflows keep their saved values."),
                 io.Int.Input("scramble_seed", default=-1, min=-1, max=2147483647, step=1,
                     control_after_generate=io.ControlAfterGenerate.fixed,
                     tooltip="Ref scrambling seed. -1 (default) = off: all refs in saved order. "
@@ -859,17 +941,19 @@ class MiniMaxH3RefModApply(io.ComfyNode):
                             "scramble; set this widget's control-after-generate to 'randomize' "
                             "for per-run variation."),
                 io.Combo.Input("curve_shape", options=list(CURVE_SHAPES),
-                    default="ease",
-                    tooltip="How the envelope travels between its endpoints: 'ease' (smoothstep, "
-                            "default), 'linear', 'sigmoid'/'tanh' (smooth S-curves, tanh with a "
+                    default="linear",
+                    tooltip="How the weighting travels between its endpoints: 'linear', "
+                            "'ease' (smoothstep), 'sigmoid'/'tanh' (S-curves, tanh with a "
                             "steeper knee), 'quadratic', 'cubic', 'exponential', 'stair' "
-                            "(stepped), 'elastic' (overshoots), 'bump' (peak mid-video, for "
-                            "one specific action), 'dip' (trough mid-video)."),
+                            "(stepped), 'elastic' (overshoots), 'bump'/'dip' (peak/trough "
+                            "mid-stack). Only matters when curve_direction != constant."),
                 io.Float.Input("curve_value", default=1.0, min=0.0, max=1.0, step=0.01,
-                    tooltip="Endpoint value ('user input'): both endpoints for 'constant' and "
-                            "'concept_at_ends', the end for 'concept_at_start', the start for "
-                            "'concept_at_end', the mid peak for 'concept_at_middle'. "
-                            "1.0 = full strength there."),
+                    tooltip="Endpoint weight ('user input'): both endpoints for 'constant' and "
+                            "'concept_at_ends', the start for 'concept_at_start', the end for "
+                            "'concept_at_end', the mid peak for 'concept_at_middle'. On "
+                            "single-image ('image'-kind) mods this acts as a simple STRENGTH CAP "
+                            "(directions are meaningless on one frame): 0.4 = the ref blends "
+                            "40% toward its blurred self."),
                 io.Combo.Input("graph_preset",
                     options=["(none)"] + _list_graph_presets(), default="(none)",
                     optional=True,
@@ -878,6 +962,9 @@ class MiniMaxH3RefModApply(io.ComfyNode):
                             "saved debug-grid PNG (graph embedded in its metadata) or a legacy "
                             ".json, in models/refmods/graph_presets/. Share the preset PNG "
                             "itself to share a curve. New presets appear after a restart."),
+                io.Combo.Input("scramble_mode", options=["shuffle", "subset", "legacy_subset"], default="shuffle", optional=True),
+                io.Int.Input("scramble_keep", default=1, min=1, max=80, optional=True, tooltip="Refs retained in subset mode; shuffle keeps all refs."),
+                io.Int.Input("max_total_tokens", default=0, min=0, max=1048576, optional=True, tooltip="Total reference token budget after copies; 0 disables the limit."),
                 io.String.Input("save_preset_as", default="", optional=True,
                     tooltip="Optional: type a name and run to save the current (resolved) curve "
                             "as a PNG preset — the curve graph itself with the graph embedded in "
@@ -896,8 +983,9 @@ class MiniMaxH3RefModApply(io.ComfyNode):
 
     @classmethod
     def execute(cls, conditioning, mods, retention=1.0,
-                curve_direction="concept_at_end", curve_shape="ease", curve_value=1.0,
-                strength_curve=None, scramble_seed=-1, graph_preset="", save_preset_as=""):
+                curve_direction="constant", curve_shape="linear", curve_value=1.0,
+                strength_curve=None, scramble_seed=-1, graph_preset="", save_preset_as="",
+                override=False, scramble_mode="legacy_subset", scramble_keep=1, max_total_tokens=0):
         # workflows saved before the curve split pass the old single preset name
         curve = strength_curve if strength_curve is not None \
             else (curve_direction, curve_shape, curve_value)
@@ -911,13 +999,34 @@ class MiniMaxH3RefModApply(io.ComfyNode):
             else:
                 curve = loaded
                 preset_name = graph_preset
+        # override: pull retention + curve from the first mod with a fixed config
+        if override:
+            found = None
+            for m, _s in (mods or []):
+                saved = _saved_curve(getattr(m, "config", None), "curve")
+                if saved is not None:
+                    found = (m, saved)
+                    break
+            if found is None:
+                print("[MiniMaxH3RefModApply] override=True but no mod in the bundle "
+                      "has a saved config — using the manual parameters.")
+            else:
+                m, saved = found
+                cfg = getattr(m, "config", None) or {}
+                curve = saved
+                if isinstance(cfg.get("retention"), (int, float)):
+                    retention = min(1.0, max(0.0, float(cfg["retention"])))
+                print(f"[MiniMaxH3RefModApply] override: using config from '{m.name}' "
+                      f"(retention={retention:.2f}, curve={curve[0]} + {curve[1]} "
+                      f"@ {float(curve[2]):.2f})")
         img = render_debug_grid(curve, preset_name)
         if save_preset_as:
             saved = _save_graph_preset(save_preset_as, curve, img)
             if saved:
                 print(f"[MiniMaxH3RefModApply] graph preset saved: {saved}.png "
                       f"({curve[0]} + {curve[1]} @ {float(curve[2]):.2f})")
-        blocks = _ref_blocks(mods, retention, curve, seed=scramble_seed)
+        blocks = _ref_blocks(mods, retention, curve, seed=scramble_seed,
+                             scramble_mode=scramble_mode, scramble_keep=scramble_keep, max_total_tokens=max_total_tokens)
         if isinstance(conditioning, list):
             # built-in ComfyUI CONDITIONING (core MiniMaxH3ReferenceToVideo)
             out = []
@@ -958,27 +1067,44 @@ class MiniMaxH3RefModStepCurve:
                 "model": ("MODEL", {
                     "tooltip": "The H3 model to patch. Returned unchanged apart from the per-step "
                                "ref-mixing wrapper."}),
-                "curve_direction": (list(CURVE_DIRECTIONS), {"default": "concept_at_end",
-                    "tooltip": "Same envelope as the Apply frame curve, but over the DENOISE "
-                               "timeline: 'concept_at_end' (default) keeps the refs at full "
-                               "strength in the early steps (high sigma — composition and identity "
-                               "set first) and releases them toward the final steps (clean texture, "
-                               "no ref grain); 'concept_at_start' opens weak and locks full strength "
-                               "in the late steps (identity detail refined at the end); 'constant' "
-                               "keeps one strength for every step; 'concept_at_middle' peaks "
-                               "mid-denoise; 'concept_at_ends' holds the extremes and dips "
-                               "mid-denoise. Old 'decrease'/'increase' values still resolve."}),
-                "curve_shape": (list(CURVE_SHAPES), {"default": "ease",
-                    "tooltip": "How the per-step strength travels between its endpoints (same "
-                               "shapes as the Apply frame curve: linear / ease / sigmoid / tanh / "
-                               "quadratic / cubic / exponential / stair / elastic / bump / dip)."}),
+                "override": ("BOOLEAN", {"default": False,
+                    "tooltip": "Use the step_curve fixed into a mod's own metadata (by 'Fix H3 "
+                               "RefMod Config') instead of the curve widgets. Needs the mods "
+                               "bundle connected to the optional 'mods' input below. Off (default) "
+                               "= use the manual widgets. If no mod carries a saved step_curve it "
+                               "falls back to the manual widgets and prints a note."}),
+                "curve_direction": (list(CURVE_DIRECTIONS), {"default": "constant",
+                    "tooltip": "Strength envelope over the DENOISE timeline (the one "
+                               "temporal axis refs actually respond to): 'constant' "
+                               "(default) = full ref at every step — pure passthrough, "
+                               "nothing is re-mixed. 'concept_at_start' holds refs at "
+                               "full strength in the early steps (high sigma — "
+                               "composition and identity set first) and releases them "
+                               "toward the final steps (clean texture, no ref grain); "
+                               "'concept_at_end' opens weak and locks full strength in "
+                               "the late steps (identity detail refined at the very end "
+                               "of denoising); 'concept_at_middle' peaks mid-denoise; "
+                               "'concept_at_ends' holds the extremes and dips "
+                               "mid-denoise. Old 'decrease'/'increase' values still "
+                               "resolve."}),
+                "curve_shape": (list(CURVE_SHAPES), {"default": "linear",
+                    "tooltip": "How the per-step strength travels between its endpoints "
+                               "(linear / ease / sigmoid / tanh / quadratic / cubic / "
+                               "exponential / stair / elastic / bump / dip). Only matters "
+                               "when curve_direction != constant."}),
                 "curve_value": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
                     "display": "number",
                     "tooltip": "Endpoint strength ('user input'): both endpoints for 'constant' and "
-                               "'concept_at_ends', the end for 'concept_at_start', the start for "
+                               "'concept_at_ends', the start for 'concept_at_start', the end for "
                                "'concept_at_end', the mid peak for 'concept_at_middle'. "
                                "1.0 = full ref there."}),
-            }
+            },
+            "optional": {
+                "mods": ("H3_REF_MODS", {
+                    "tooltip": "Optional bundle, only read when 'override' is on: the first mod "
+                               "carrying a saved step_curve config supplies this node's curve. "
+                               "Leave unconnected when override is off."}),
+            },
         }
 
     RETURN_TYPES = ("MODEL",)
@@ -986,16 +1112,242 @@ class MiniMaxH3RefModStepCurve:
     FUNCTION = "apply"
     CATEGORY = "MiniMax-H3/mod"
 
-    def apply(self, model, curve_direction="concept_at_end",
-              curve_shape="ease", curve_value=1.0):
+    def apply(self, model, mods=None, override=False,
+              curve_direction="constant", curve_shape="linear", curve_value=1.0):
+        curve = (curve_direction, curve_shape, curve_value)
+        if override:
+            found = None
+            for m, _s in (mods or []):
+                saved = _saved_curve(getattr(m, "config", None), "step_curve")
+                if saved is not None:
+                    found = (m, saved)
+                    break
+            if found is None:
+                print("[MiniMaxH3RefModStepCurve] override=True but no mod in the "
+                      "bundle has a saved step_curve config — using the manual "
+                      "parameters.")
+            else:
+                m, curve = found
+                print(f"[MiniMaxH3RefModStepCurve] override: using step_curve from "
+                      f"'{m.name}' ({curve[0]} + {curve[1]} @ {float(curve[2]):.2f})")
         model = model.clone()
+        # unique key per attach: chained Step Curve nodes each get their own
+        # wrapper entry (same key would append into the same list slot and
+        # double-mix); a no-op curve still attaches harmlessly
+        key = f"minimax_h3_refmod_step_curve_{next(_STEP_WRAPPER_SEQ)}"
+        progress = ContextVar(key, default=1000.0)
+        def schedule(executor, noise, latent_image, sampler, sigmas, *args, **kwargs):
+            sampling = executor.class_obj.model_patcher.get_model_object("model_sampling")
+            start = float(sampling.timestep(sigmas[0]))
+            token = progress.set(start)
+            try:
+                return executor(noise, latent_image, sampler, sigmas, *args, **kwargs)
+            finally:
+                progress.reset(token)
+        model.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.OUTER_SAMPLE, key, schedule)
         model.add_wrapper_with_key(
             comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
-            "minimax_h3_refmod_step_curve",
-            _make_step_wrapper((curve_direction, curve_shape, curve_value)))
-        print(f"[MiniMaxH3RefModStepCurve] {curve_direction} + {curve_shape} "
-              f"@ {curve_value:.2f} attached — refs re-mixed per denoising step")
+            key, _make_step_wrapper(curve, progress))
+        print(f"[MiniMaxH3RefModStepCurve] {curve[0]} + {curve[1]} "
+              f"@ {float(curve[2]):.2f} attached — refs re-mixed per denoising step")
         return (model,)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Node: MiniMaxH3RefModConfig (fix tuned settings into the mod file)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class MiniMaxH3RefModConfig:
+    """Fix tuned Apply / Step-Curve settings into a mod's safetensors metadata.
+
+    Every concept has its own "magic settings" — retention + curve on Apply,
+    a step curve on H3 RefMod Step Curve — and figuring them out is a
+    learning curve of its own.  This node bakes those values into the mod
+    file's metadata (re-saving it in place), so a creator tunes once and
+    ships the config with the mod.  Newbies then just flip the ``override``
+    toggle on Apply / Step Curve and get the exact settings the concept was
+    built with, without touching a dial.  A mod without a config falls back
+    to the manual widgets (with a console note).
+
+    Wire ``mods`` through this node (Loader -> Config -> Apply); the bundle
+    is returned unchanged apart from the config attached to each mod object
+    (and written to the file, so it also survives a restart / sharing the
+    .safetensors).
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "mods": ("H3_REF_MODS", {
+                    "tooltip": "The mods to fix a config into (e.g. from Load H3 RefMods). "
+                               "Each mod's .safetensors is re-saved with the settings below "
+                               "embedded in its metadata; the bundle passes through unchanged."}),
+                "retention": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0,
+                    "step": 0.01, "display": "number",
+                    "tooltip": "Master reference strength for Apply H3 RefMod — the value that "
+                               "makes THIS concept work (1.0 = fully_preserved, 0.7 = "
+                               "partially_preserved, 0.4 = attribute_transfer, 0.15 = "
+                               "weak_reference)."}),
+                "curve_direction": (list(CURVE_DIRECTIONS), {"default": "concept_at_end",
+                    "tooltip": "The Apply frame-curve direction this concept needs (same list as "
+                               "Apply H3 RefMod)."}),
+                "curve_shape": (list(CURVE_SHAPES), {"default": "ease",
+                    "tooltip": "The Apply frame-curve shape this concept needs."}),
+                "curve_value": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "display": "number",
+                    "tooltip": "Apply curve endpoint value (1.0 = full strength there)."}),
+                "step_curve_direction": (list(CURVE_DIRECTIONS), {"default": "concept_at_end",
+                    "tooltip": "The H3 RefMod Step Curve direction this concept needs (over the "
+                               "denoise timeline)."}),
+                "step_curve_shape": (list(CURVE_SHAPES), {"default": "ease",
+                    "tooltip": "The Step Curve shape this concept needs."}),
+                "step_curve_value": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0,
+                    "step": 0.01, "display": "number",
+                    "tooltip": "Step Curve endpoint value (1.0 = full ref there)."}),
+            },
+        }
+
+    RETURN_TYPES = ("H3_REF_MODS",)
+    RETURN_NAMES = ("mods",)
+    FUNCTION = "fix"
+    CATEGORY = "MiniMax-H3/mod"
+
+    def fix(self, mods, retention=1.0, curve_direction="concept_at_end",
+            curve_shape="ease", curve_value=1.0,
+            step_curve_direction="concept_at_end", step_curve_shape="ease",
+            step_curve_value=1.0):
+        cfg = {
+            "retention": min(1.0, max(0.0, float(retention))),
+            "curve": [curve_direction, curve_shape,
+                      min(1.0, max(0.0, float(curve_value)))],
+            "step_curve": [step_curve_direction, step_curve_shape,
+                           min(1.0, max(0.0, float(step_curve_value)))],
+        }
+        out = []
+        saved_paths = set()
+        for item in mods:
+            mod, strength = item if isinstance(item, tuple) else (item, 1.0)
+            mod.config = dict(cfg)
+            path = getattr(mod, "path", "") or os.path.join(refmods_dir(), mod.name)
+            if path not in saved_paths:
+                mod.save(path)
+                saved_paths.add(path)
+            mod.path = path
+            _cache_mod(path, mod)
+            out.append((mod, strength))
+            print(f"[MiniMaxH3RefModConfig] '{mod.name}': config fixed into "
+                  f"metadata (retention={cfg['retention']:.2f}, "
+                  f"curve={curve_direction} + {curve_shape} @ {float(curve_value):.2f}, "
+                  f"step_curve={step_curve_direction} + {step_curve_shape} "
+                  f"@ {float(step_curve_value):.2f})")
+        if out:
+            global _MOD_LIST_CACHE_KEY
+            _MOD_LIST_CACHE_KEY = None  # files changed -> refresh listings
+        return (out,)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Node: MiniMaxH3RefModContinuumBridge (H3-Continuum integration)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class MiniMaxH3RefModContinuumBridge:
+    """Attach refs to a cloned MODEL for every sampling call, including Continuum chunks.
+
+    Uses the public OUTER_SAMPLE hook; no global state or Continuum monkey patch.
+    Disabling removes this bridge from the clone. Original conditioning is restored
+    on completion, exception or cancellation.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL", {
+                    "tooltip": "Cloned model with scoped refs — wire Load Model -> this "
+                               "-> Continuum Sampler 'model'. This link is what makes the "
+                               "bridge execute before sampling."}),
+                "mods": ("H3_REF_MODS", {
+                    "tooltip": "Bundle from Load H3 RefMods / Extract H3 RefMod — injected "
+                               "into every Continuum chunk while 'enable' is on."}),
+                "enable": ("BOOLEAN", {"default": True,
+                    "tooltip": "Master switch for the injection. Off = pure passthrough "
+                               "(this bridge is removed from the cloned model)."}),
+                "retention": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0,
+                    "step": 0.01, "display": "number",
+                    "tooltip": "Master reference strength (same scale as Apply H3 RefMod): "
+                               "1.0 = fully_preserved, 0.7 = partially_preserved, "
+                               "0.4 = attribute_transfer, 0.15 = weak_reference."}),
+                "curve_direction": (list(CURVE_DIRECTIONS), {"default": "constant",
+                    "tooltip": "Weighting across each mod's own ref frames (NOT output-video "
+                               "time): 'constant' keeps every frame at full strength. Other "
+                               "directions fade part of the stack toward blur — mainly useful "
+                               "for multi-ref mods."}),
+                "curve_shape": (list(CURVE_SHAPES), {"default": "linear",
+                    "tooltip": "How that weighting travels between endpoints."}),
+                "curve_value": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0,
+                    "step": 0.01, "display": "number",
+                    "tooltip": "Endpoint weight; on single-image mods this acts as a plain "
+                               "strength cap."}),
+                "scramble_seed": ("INT", {"default": -1, "min": -1, "max": 2147483647,
+                    "step": 1,
+                    "tooltip": "-1 = off (all refs, saved order). >= 0 shuffles the bundle "
+                               "and keeps a subset, re-drawn on every queued run when the "
+                               "widget's control-after-generate is set to 'randomize'."}),
+            },
+            "optional": {
+                "scramble_mode": (["shuffle", "subset", "legacy_subset"], {"default": "shuffle"}),
+                "scramble_keep": ("INT", {"default": 1, "min": 1, "max": 80}),
+                "max_total_tokens": ("INT", {"default": 0, "min": 0, "max": 1048576}),
+            },
+        }
+
+    RETURN_TYPES = ("MODEL", "H3_REF_MODS", "STRING")
+    RETURN_NAMES = ("model", "mods", "status")
+    FUNCTION = "arm"
+    CATEGORY = "MiniMax-H3/mod"
+
+    def arm(self, model, mods, enable=True, retention=1.0,
+            curve_direction="constant", curve_shape="linear", curve_value=1.0,
+            scramble_seed=-1, scramble_mode="legacy_subset", scramble_keep=1, max_total_tokens=0):
+        flat_curve = (curve_direction == "constant"
+                      and curve_shape == "linear" and curve_value >= 1.0)
+        curve = None if flat_curve else (curve_direction, curve_shape, curve_value)
+        blocks = _ref_blocks(mods, retention, curve, seed=scramble_seed,
+                             scramble_mode=scramble_mode, scramble_keep=scramble_keep, max_total_tokens=max_total_tokens)
+        model = continuum_bridge.attach(model, blocks, enable)
+        status = "model-scoped bridge active" if enable else "bridge disabled"
+        print(f"[MiniMaxH3RefModContinuumBridge] {status} "
+              f"({len(blocks)} block(s) prepared)")
+        return (model, mods, status)
+
+
+class MiniMaxH3RefModBridgeDisarm:
+    """Legacy workflow compatibility: global bridge state no longer exists."""
+    DEPRECATED = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "trigger": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF,
+                    "control_after_generate": True,
+                    "tooltip": "Any change re-runs the disarm; 'randomize' after "
+                               "each generate makes that automatic."}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("status",)
+    OUTPUT_NODE = True
+    FUNCTION = "disarm"
+    CATEGORY = "MiniMax-H3/mod"
+
+    def disarm(self, trigger=0):
+        del trigger
+        status = continuum_bridge.disarm()
+        print(f"[MiniMaxH3RefModBridgeDisarm] {status}")
+        return {"ui": {}, "result": (status,)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1128,6 +1480,19 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
     ``identity`` (training mode only) is the refinement loop — the only
     "training" in the pack.
 
+    ``merge`` (training mode only): instead of stacking each ref's own pooled
+    latent, one shared grid is refined jointly against *every* full encode
+    (mean reconstruction error), so a collection lands on what's common
+    across all the views — the cheap multi-exemplar analog of training, at
+    one mod's token cost. See ``core.optimize_latent_multi``.
+
+    ``motion_only`` (training mode only, experimental): video refs are
+    converted to per-frame temporal differences (|f[t+1] - f[t]|) before
+    encoding, so the latent carries where/how things move instead of what
+    they look like — the static appearance never enters the mod. For a
+    lineart animation this keeps the moving lines and drops the static
+    drawing. Image refs have no motion and keep their appearance (warned).
+
     ``max_tokens`` (0 = off) hard-caps the total injected tokens: when the
     stacked refs exceed it, near-duplicate latent frames are dropped first,
     then frames are resampled to fit (see ``core.fit_token_budget``).
@@ -1146,7 +1511,9 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 "own content instead of averaging away. 'training' mode (default) "
                 "compresses the refs to a grid and refines it — good identity at "
                 "a fraction of the tokens; 'encode' stores the full-res encode "
-                "(max identity, MB-size mod)."
+                "(max identity, MB-size mod). Flip 'merge' on to extract a "
+                "collection as ONE consensus latent (joint refinement against "
+                "every ref) instead of a stack."
             ),
             category="MiniMax-H3/mod",
             inputs=[
@@ -1199,7 +1566,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "while staying smooth and in-distribution), 1 = mask has no effect. "
                             "Middle values (0.3-0.6) partially blur instead of fully."),
                 io.Custom("MINIMAX_H3_AV_ENCODER").Input("av_encoder", optional=True,
-                    tooltip="MiniMax-H3 VAE pack output (preferred; share the pack's VAE cache)."),
+                    tooltip="Legacy MiniMax-H3 VAERef. Loads its video checkpoint using the native ComfyUI VAE; prefer vae to share an already loaded VAE."),
                 io.Vae.Input("vae", optional=True,
                     tooltip="Standard VAE, used when av_encoder is not connected."),
                 io.Int.Input("ref_resolution", default=1024, min=256, max=2048, step=64,
@@ -1226,6 +1593,30 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "(gradient refinement steps). Higher = more identity detail but sticks "
                             "to the refs' framing/background; lower = deviates from the refs but "
                             "loses detail. 500 is a good default; 0 = pure pooling."),
+                io.Boolean.Input("merge", default=False,
+                    label_on="merge", label_off="stack",
+                    tooltip="Merge mode (training only): instead of stacking each ref's own "
+                            "pooled latent, optimize ONE shared grid against every full encode "
+                            "jointly — the result lands on what's COMMON across all the views "
+                            "(structure, motion, identity) rather than any single shot's "
+                            "framing/background. Ideal for a collection: many angles of a "
+                            "subject, a folder of similar clips -> one tiny consensus mod, one "
+                            "ref block's worth of tokens. Keeps every full encode in VRAM "
+                            "during refinement. Off = stack (each ref keeps its own frames). "
+                            "Ignored when mode='encode'."),
+                io.Boolean.Input("motion_only", default=False,
+                    label_on="motion", label_off="full",
+                    tooltip="EXPERIMENTAL — extract only what MOVES. Video refs are "
+                            "converted to per-frame temporal differences "
+                            "(|f[t+1] - f[t]|, normalized) before encoding, so the mod "
+                            "carries where/how things move and the static appearance "
+                            "(background, the lineart look, an outfit) never enters the "
+                            "latent. For a lineart animation this keeps the moving lines "
+                            "and drops the static drawing. Needs video refs — a still "
+                            "has no motion, so image refs keep their appearance (warned). "
+                            "Training mode only; the ref channel is content-based, so "
+                            "treat the result as a soft motion guide, not a ControlNet. "
+                            "Combines with 'merge'."),
                 io.Int.Input("multiplier", default=1, min=1, max=10, step=1,
                     tooltip="Data multiplier: repeat the extracted ref N times along time so a short "
                             "video/GIF (few tokens) isn't drowned out by the main video's tokens. "
@@ -1240,6 +1631,8 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "after the multiplier. Lower latent_frames/ref_resolution instead to "
                             "avoid wasting encode work: ~23K tokens = one 1024px encode-mode video "
                             "ref at 16 frames."),
+                io.Combo.Input("extraction_preset", options=["manual", "identity_encode", "style_experimental", "motion_sequence"], default="manual", optional=True),
+                io.String.Input("subfolder", default="", optional=True, tooltip="Optional folder inside models/refmods, for example celebs or voices."),
                 io.String.Input("description", default="", multiline=True,
                     tooltip="Optional text describing the concept (e.g. 'a ginger woman with messy "
                             "hair', 'an animation style', 'handheld camera movement'). Stored in "
@@ -1259,9 +1652,17 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 av_encoder=None, vae=None,
                 ref_resolution=1024, pool_h=16, pool_w=16, latent_frames=16,
                 identity=500, multiplier=1, max_tokens=0, description="", save=True,
-                concept_type="generic", mask=None, background_retention=0.0,
-                **legacy) -> io.NodeOutput:
+                concept_type="generic", mask=None, background_retention=0.0, subfolder="",
+                merge=False, motion_only=False, extraction_preset="manual", **legacy) -> io.NodeOutput:
         name = _sanitize_name(name)
+        if extraction_preset == "identity_encode":
+            mode, ref_resolution, identity, merge, motion_only = "encode", 1024, 0, False, False
+        elif extraction_preset == "style_experimental":
+            mode, pool_h, pool_w, identity, merge, motion_only = "training", 8, 8, 150, False, False
+        elif extraction_preset == "motion_sequence":
+            mode, pool_h, pool_w, latent_frames, merge, motion_only = "training", 16, 16, 16, False, False
+        elif extraction_preset != "manual":
+            raise ValueError("Unknown extraction preset.")
         mode = normalize_mode(mode)  # accept legacy 'full'/'pooled'
         if concept_type == "identity" and mode == "training" and max(pool_h, pool_w) < 16:
             print(
@@ -1285,10 +1686,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             raise ValueError(
                 "MiniMaxH3RefModExtract: connect an av_encoder (MiniMax-H3 "
                 "VAE loader) or a standard VAE.")
-        pack = None
-        if av_encoder is not None:
-            vae_pack_mod = _h3_pack_submodule("models.vae")
-            pack = vae_pack_mod.load_vae_pack(av_encoder.video_path, av_encoder.audio_path)
+        vae = _resolve_visual_vae(vae, av_encoder)
 
         # each Autogrow arrives as a dict keyed by its slot names
         # (ref_image_1..N / ref_video_1..N); videos stay multi-frame, images are
@@ -1322,6 +1720,13 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             raise ValueError(
                 "MiniMaxH3RefModExtract: connect at least one image to "
                 "ref_image_1, or video frames to ref_video_1, or a folder bundle.")
+        if merge and mode != "training":
+            print("[MiniMaxH3RefModExtract] warning: 'merge' only applies to "
+                  "training mode — stacking the refs as usual for mode='encode'.")
+        if motion_only and mode != "training":
+            print("[MiniMaxH3RefModExtract] warning: 'motion_only' only applies to "
+                  "training mode — extracting the full appearance for mode='encode'.")
+            motion_only = False
         sources = []
         for i, (src, is_video) in enumerate(ordered):
             norm = _normalize_ref(src, label=f"reference {i + 1}")
@@ -1367,6 +1772,11 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         n_img = n_vid = 0
         source_shapes = []
         n_refs = len(sources)
+        motion_applied = False
+        motion_warned = False
+        # merge mode: hold each ref's pooled candidate + full encode, then
+        # refine one shared latent against all of them jointly after the loop
+        merge_refs = [] if (merge and mode == "training" and n_refs > 1) else None
         pbar = comfy.utils.ProgressBar(n_refs)
         for src_idx in range(len(sources)):
             src, is_video = sources[src_idx]
@@ -1392,6 +1802,23 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                     print(f"[MiniMaxH3RefModExtract] {label}: resized "
                           f"{orig[0]}x{orig[1]} -> {src.shape[1]}x{src.shape[2]} "
                           f"(ref_resolution={ref_resolution}) before encode")
+            if motion_only and is_video and src.shape[0] > 1:
+                # temporal differences: |f[t+1] - f[t]|, normalized by the clip's
+                # peak motion so static frames stay dark ("no motion here") and
+                # moving parts light up — appearance never enters the latent
+                d = (src[1:] - src[:-1]).abs()
+                peak = d.max()
+                if peak > 1e-6:
+                    d = d / peak
+                src = d
+                motion_applied = True
+                print(f"[MiniMaxH3RefModExtract] {label}: motion_only — "
+                      f"encoded temporal differences instead of the frames "
+                      f"(static appearance stripped)")
+            elif motion_only and not is_video and not motion_warned:
+                print("[MiniMaxH3RefModExtract] warning: motion_only needs video "
+                      "refs — a still has no motion, keeping its appearance.")
+                motion_warned = True
             src = _ensure_min_size(src)
             if is_video and src.shape[0] > 1:
                 valid_t = _snap_to_causal_grid(src.shape[0])
@@ -1402,7 +1829,8 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                     src = src[:valid_t]
             mask_px = None
             if mask_batch is not None:
-                mask_px = _resize_mask(mask_batch[src_idx:src_idx + 1], src.shape[1], src.shape[2])
+                mask_px = _resize_mask(mask_batch[src_idx:src_idx + 1], src.shape[1], src.shape[2],
+                                       "center" if mode == "encode" and canvas is not None else "disabled")
             if src.shape[1] <= 0 or src.shape[2] <= 0:
                 raise ValueError(
                     f"MiniMaxH3RefModExtract: reference {src_idx + 1} "
@@ -1411,22 +1839,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                     f"ref_resolution={ref_resolution}, canvas={canvas}). "
                     f"Check that this specific reference's source image/video "
                     f"is valid.")
-            # encode-path conventions differ:
-            #  - av_encoder -> pack's raw H3 VAE: channel-first [1, 3, T, H, W]
-            #    in [-1, 1] (same as the pack's own conditioning node)
-            #  - vae -> comfy sd.VAE wrapper: channel-last [T, H, W, C] in [0, 1];
-            #    the wrapper does its own layout conversion and /16 cropping, and
-            #    would misread channel-first input (narrowing the channel dim to 0)
-            if pack is not None:
-                moved = src.movedim(-1, 1)
-                if moved.shape[0] == 1:
-                    pixels = moved
-                else:
-                    pixels = moved.permute(1, 0, 2, 3).unsqueeze(0)
-                pixels = (pixels * 2.0 - 1.0).to(torch.float16)
-                z = pack.encode_video(pixels)
-            else:
-                z = vae.encode(src)
+            z = vae.encode(src)
             if z.dim() != 5 or z.shape[1] != 24:
                 raise ValueError(
                     f"Expected a MiniMax H3 video VAE latent [1,24,T,H,W], "
@@ -1444,13 +1857,16 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 pool_t = min(latent_frames, z.shape[2]) if is_video else 1
                 gh, gw = pool_grid if pool_grid is not None else (pool_h, pool_w)
                 pooled = pool_latent(z, pool_t, gh, gw).to(torch.float16)
-                if identity > 0:
+                if merge_refs is not None:
+                    merge_refs.append((pooled.cpu(), z.float().cpu()))
+                elif identity > 0:
                     print(f"[MiniMaxH3RefModExtract] {label}: refining identity "
                           f"({int(identity)} gradient steps)...")
                     pooled = optimize_latent(pooled, z.float(), steps=int(identity),
                                               progress_every=100)
                     print(f"[MiniMaxH3RefModExtract] {label}: identity refinement done")
-            frames.append(pooled)
+            if merge_refs is None:
+                frames.append(pooled)
             if is_video:
                 n_vid += 1
             else:
@@ -1470,7 +1886,27 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                   f"training mode — encode mode stores the actual encode, so "
                   f"identity={identity} was ignored.")
 
-        latent = torch.cat(frames, dim=2)  # [1, 24, total_t, h, w]
+        merged_n = 0
+        if merge_refs is not None:
+            # one shared grid refined against every full encode jointly, so the
+            # result is the consensus of the collection, not any single shot
+            common_t = max(p.shape[2] for p, _ in merge_refs)
+            init = torch.stack([
+                pool_latent(p, common_t, gh, gw) for p, _ in merge_refs
+            ]).mean(0)
+            print(f"[MiniMaxH3RefModExtract] merging {len(merge_refs)} references "
+                  f"into one shared {common_t}x{gh}x{gw} latent"
+                  + (f", {int(identity)} joint gradient steps" if identity > 0 else
+                     " (pure pooling mean — identity=0)"))
+            if identity > 0:
+                init = optimize_latent_multi(
+                    init, [f for _, f in merge_refs],
+                    steps=int(identity), progress_every=100)
+                print("[MiniMaxH3RefModExtract] merge refinement done")
+            latent = init.to(torch.float16)
+            merged_n = len(merge_refs)
+        else:
+            latent = torch.cat(frames, dim=2)  # [1, 24, total_t, h, w]
         if multiplier > 1:
             latent = latent.repeat(1, 1, multiplier, 1, 1)  # data multiplier
         if max_tokens > 0:
@@ -1479,6 +1915,21 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         kind = "video" if total_t > 1 else "image"
         # the VAE encodes at 16x spatial scale, so a latent of 40x20 = 640x320 px
         px_w, px_h = latent.shape[4] * 16, latent.shape[3] * 16
+        if merged_n:
+            src = f"merge {merged_n} refs"
+        elif len(frames) > 1:
+            src = "stack"
+        else:
+            src = "video" if n_vid else "image"
+        tags = [f"{n_img} img, {n_vid} vid"]
+        if merged_n:
+            tags.append(f"merged {merged_n} refs")
+        if motion_applied:
+            tags.append("motion_only")
+        if multiplier > 1:
+            tags.append(f"x{multiplier} repeat")
+        if mask_batch is not None:
+            tags.append(f"masked (bg_retention={background_retention})")
         mod = H3RefMod(
             name=name,
             kind=kind,
@@ -1487,22 +1938,20 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             latent_w=latent.shape[4],
             latent_t=total_t,
             mode=mode,
-            source="stack" if len(frames) > 1 else ("video" if n_vid else "image"),
+            source=src,
             source_shape=" +".join(source_shapes),
             pool=f"full-res {px_w}x{px_h}px (short-edge cap {ref_resolution}px)" if mode == "encode" else f"{total_t}x{gh}x{gw}",
             optimize_steps=int(identity) if mode == "training" else 0,
-            tags=[f"{n_img} img, {n_vid} vid"] + ([f"x{multiplier} repeat"] if multiplier > 1 else [])
-                + ([f"masked (bg_retention={background_retention})"] if mask_batch is not None else []),
+            tags=tags,
             description=(description or "").strip(),
             concept_type=concept_type,
         )
 
         if save:
-            path = mod.save(os.path.join(refmods_dir(), name))
-            _MOD_CACHE[name] = mod
-            if len(_MOD_CACHE) > _MOD_CACHE_MAX:
-                _MOD_CACHE.pop(next(iter(_MOD_CACHE)))
-            _MOD_LIST_CACHE_KEY = None  # new mod -> refresh the dropdown listing
+            path_no_ext = mod_output_path(name, subfolder)
+            path = mod.save(path_no_ext)
+            mod.path = path_no_ext  # so Fix H3 RefMod Config can re-save in place
+            _cache_mod(path_no_ext, mod)
             print(f"[MiniMaxH3RefModExtract] saved {_summarize(mod)} -> {path}")
         else:
             print(f"[MiniMaxH3RefModExtract] {_summarize(mod)} (not saved)")
@@ -1515,22 +1964,242 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
 # Registration
 # ═══════════════════════════════════════════════════════════════════════════
 
+class MiniMaxH3RefModInspect:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "mods": ("H3_REF_MODS",),
+            "index": ("INT", {"default": 0, "min": 0, "max": 10000}),
+            "preview": (["off", "stored", "compare_strength"],),
+            "strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0}),
+        }, "optional": {"vae": ("VAE",)}}
+    RETURN_TYPES = ("STRING", "IMAGE", "AUDIO")
+    RETURN_NAMES = ("details", "image_preview", "audio_preview")
+    FUNCTION = "inspect"
+    CATEGORY = "MiniMax-H3/mod"
+
+    def inspect(self, mods, index=0, preview="off", strength=0.5, vae=None):
+        error = _number_error("strength", strength, "FLOAT", {"min":0, "max":1})
+        if error:
+            raise ValueError(error)
+        details = []
+        for mod, row_strength in mods:
+            details.append({"name": mod.name, "path": mod.path, "kind": mod.kind,
+                            "shape": list(mod.latent.shape), "tokens": mod.token_count,
+                            "strength": row_strength, "description": mod.description,
+                            "concept_type": mod.concept_type, "saved_config": mod.config})
+        report = json.dumps({"total_tokens": _check_token_budget(mods, 0), "refs": details}, indent=2, ensure_ascii=False)
+        images = torch.zeros(1,64,64,3)
+        audio = {"waveform": torch.zeros(1,2,1), "sample_rate": 32000}
+        if preview != "off":
+            if vae is None:
+                raise ValueError("Connect the matching H3 VAE to enable previews.")
+            if not 0 <= index < len(mods):
+                raise ValueError("Preview index is outside the RefMod bundle.")
+            mod = mods[index][0]
+            z = mod.latent[..., :80] if mod.kind == "audio" else mod.latent[:, :, :1]
+            variants = [z]
+            if preview == "compare_strength":
+                variants.append(strength * z + (1.0 - strength) * _blur_latent(z))
+            elif preview != "stored":
+                raise ValueError("Unknown preview mode.")
+            if mod.kind == "audio":
+                from comfy.ldm.minimax.audio_vae import MiniMaxH3AudioVAE
+                if not isinstance(vae.first_stage_model, MiniMaxH3AudioVAE):
+                    raise ValueError("Audio previews require the MiniMax H3 audio VAE.")
+                decoded = [vae_decode_audio(vae, {"samples": value})["waveform"] for value in variants]
+                audio = {"waveform": torch.cat(decoded, dim=-1), "sample_rate": 32000}
+            else:
+                images = torch.cat([vae.decode(value) for value in variants], dim=0)
+        return (report, images, audio)
+
+
+class MiniMaxH3RefModAudioExtract:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "audio": ("AUDIO",), "audio_vae": ("VAE",),
+            "name": ("STRING", {"default": "audio_refmod"}),
+            "max_seconds": ("FLOAT", {"default": 30.0, "min": 0.025, "max": 600.0}),
+            "max_tokens": ("INT", {"default": 5120, "min": 0, "max": 65536}),
+            "budget_policy": (["error", "truncate"],),
+            "concept_type": (["voice", "singing", "music_style", "sound_fx", "ambience"],),
+            "description": ("STRING", {"default": "", "multiline": True}),
+            "subfolder": ("STRING", {"default": ""}),
+            "save": ("BOOLEAN", {"default": True}),
+        }}
+    RETURN_TYPES = ("H3_REF_MODS",)
+    FUNCTION = "extract"
+    CATEGORY = "MiniMax-H3/mod"
+
+    def extract(self, audio, audio_vae, name="audio_refmod", max_seconds=30.0,
+                max_tokens=5120, budget_policy="error", concept_type="voice",
+                description="", subfolder="", save=True):
+        name = _sanitize_name(name)
+        mod = make_audio_mod(audio_vae, audio, name, max_seconds, max_tokens,
+                             budget_policy, description, concept_type)
+        if save:
+            mod.path = mod_output_path(name, subfolder)
+            mod.save(mod.path)
+            _cache_mod(mod.path, mod)
+        print(f"[RefMod audio] {name}: {mod.latent_t / 40:.2f}s, {mod.token_count} tokens")
+        return ([(mod, 1.0)],)
+
+
+class MiniMaxH3RefModSave:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "mods": ("H3_REF_MODS",),
+            "filename_prefix": ("STRING", {"default": ""}),
+            "subfolder": ("STRING", {"default": ""}),
+        }}
+
+    RETURN_TYPES = ("H3_REF_MODS", "STRING")
+    RETURN_NAMES = ("mods", "saved_paths")
+    FUNCTION = "save"
+    OUTPUT_NODE = True
+    CATEGORY = "MiniMax-H3/mod"
+    DESCRIPTION = "Save each distinct RefMod in a bundle. Runs without a connected output; existing destination files are replaced. Loader strengths are preserved in the output bundle, not baked into files."
+
+    def save(self, mods, filename_prefix="", subfolder=""):
+        if not mods:
+            raise ValueError("The RefMod bundle is empty; nothing to save.")
+        planned, used_paths = {}, set()
+        for mod, _strength in mods:
+            if id(mod) in planned:
+                continue
+            base = _sanitize_name(filename_prefix + mod.name)
+            name = base
+            index = 2
+            path = mod_output_path(name, subfolder)
+            while os.path.normcase(path) in used_paths:
+                name = f"{base}_{index}"
+                index += 1
+                path = mod_output_path(name, subfolder)
+            used_paths.add(os.path.normcase(path))
+            planned[id(mod)] = replace(mod, name=name, path=path)
+        paths = []
+        for mod in planned.values():
+            paths.append(mod.save(mod.path))
+            _cache_mod(mod.path, mod)
+        out = [(planned[id(mod)], strength) for mod, strength in mods]
+        report = "\n".join(paths)
+        print(f"[RefMod Save] Saved {len(paths)} file(s):\n{report}")
+        return {"ui": {"text": paths}, "result": (out, report)}
+
+
+class MiniMaxH3RefModMasterExtract(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        schema = MiniMaxH3RefModExtract.define_schema()
+        schema.node_id = "MiniMaxH3RefModMasterExtract"
+        schema.display_name = "Extract H3 RefMod Master"
+        schema.description = (
+            "Extract appearance and/or audio into one RefMod bundle. Visual and audio "
+            "VAEs run sequentially. Saves separate name_visual and name_audio files. "
+            "This extracts references; it does not jointly train identity and voice.")
+        schema.inputs.extend([
+            io.Audio.Input("audio", optional=True),
+            io.Vae.Input("audio_vae", optional=True,
+                         tooltip="MiniMax H3 audio VAE. The visual vae socket remains separate."),
+            io.Float.Input("audio_max_seconds", default=30.0, min=0.025, max=600.0),
+            io.Int.Input("audio_max_tokens", default=5120, min=0, max=65536),
+            io.Combo.Input("audio_budget_policy", options=["error", "truncate"], default="error"),
+            io.Combo.Input("audio_concept_type", options=["voice", "singing", "music_style", "sound_fx", "ambience"], default="voice"),
+            io.Int.Input("max_total_tokens", default=0, min=0, max=1048576,
+                         tooltip="Combined visual and audio budget. 0 disables this extra limit."),
+        ])
+        schema.outputs = [io.Custom("H3_REF_MODS").Output("mods"), io.String.Output("details")]
+        return schema
+
+    @classmethod
+    def execute(cls, name, mode="training", audio=None, audio_vae=None,
+                audio_max_seconds=30.0, audio_max_tokens=5120,
+                audio_budget_policy="error", audio_concept_type="voice",
+                max_total_tokens=0, save=True, subfolder="", description="", **visual):
+        has_visual = any(
+            value is not None
+            for group in (visual.get("refs_image"), visual.get("refs_video"))
+            for value in (group or {}).values()
+        ) or any(value is not None for value in (visual.get("refs_bundle") or []))
+        has_visual = has_visual or any(
+            value is not None and (key == "image" or key.startswith(("ref_image_", "ref_video_")))
+            for key, value in visual.items())
+        if not has_visual and audio is None:
+            raise ValueError("Connect at least one image, video, reference bundle or audio to the Master.")
+        if has_visual and visual.get("vae") is None and visual.get("av_encoder") is None:
+            raise ValueError("Visual references require the video VAE or av_encoder.")
+        if audio is not None and audio_vae is None:
+            raise ValueError("Audio references require the MiniMax H3 audio VAE in audio_vae.")
+        _check_token_budget([], max_total_tokens)
+        name = _sanitize_name(name)
+        paths = {kind: mod_output_path(name + "_" + kind, subfolder)
+                 for kind, enabled in (("visual", has_visual), ("audio", audio is not None))
+                 if enabled and save}
+        if save:
+            print("[RefMod Master] Preparing references in memory; saving follows both extractions and the token-budget check.")
+        else:
+            print("[RefMod Master] save=False: output bundle only; no files will be written by Master.")
+        mods = []
+        if has_visual:
+            mods.extend(MiniMaxH3RefModExtract.execute(
+                name=name + "_visual", mode=mode, save=False,
+                description=description, **visual)[0])
+        if audio is not None:
+            mods.extend(MiniMaxH3RefModAudioExtract().extract(
+                audio=audio, audio_vae=audio_vae, name=name + "_audio",
+                max_seconds=audio_max_seconds, max_tokens=audio_max_tokens,
+                budget_policy=audio_budget_policy, concept_type=audio_concept_type,
+                description=description, save=False)[0])
+        total = _check_token_budget(mods, max_total_tokens)
+        saved_paths = []
+        for mod, _strength in mods:
+            if save:
+                mod.path = paths["audio" if mod.kind == "audio" else "visual"]
+                existed = os.path.isfile(mod.path + ".safetensors")
+                destination = mod.save(mod.path)
+                _cache_mod(mod.path, mod)
+                saved_paths.append(destination)
+                action = "Replaced" if existed else "Created"
+                print(f"[RefMod Master] {action}: {destination}")
+        print(f"[RefMod Master] Complete: {len(mods)} references, {total} tokens, {len(saved_paths)} files saved.")
+        details = json.dumps({"name": name, "total_tokens": total, "saved_paths": saved_paths,
+                              "refs": [{"name":m.name, "kind":m.kind, "tokens":m.token_count,
+                                        "path":m.path} for m, _ in mods]}, indent=2, ensure_ascii=False)
+        return io.NodeOutput(mods, details)
+
+
 NODE_CLASS_MAPPINGS = {
+    "MiniMaxH3RefModSave": MiniMaxH3RefModSave,
+    "MiniMaxH3RefModMasterExtract": MiniMaxH3RefModMasterExtract,
+    "MiniMaxH3RefModInspect": MiniMaxH3RefModInspect,
+    "MiniMaxH3RefModAudioExtract": MiniMaxH3RefModAudioExtract,
     "MiniMaxH3RefModExtract": MiniMaxH3RefModExtract,
     "MiniMaxH3RefModFolderLoader": MiniMaxH3RefModFolderLoader,
     "MiniMaxH3RefModsLoader": MiniMaxH3RefModsLoader,
     "MiniMaxH3RefModsAxis": MiniMaxH3RefModsAxis,
     "MiniMaxH3RefModApply": MiniMaxH3RefModApply,
     "MiniMaxH3RefModStepCurve": MiniMaxH3RefModStepCurve,
+    "MiniMaxH3RefModConfig": MiniMaxH3RefModConfig,
+    "MiniMaxH3RefModContinuumBridge": MiniMaxH3RefModContinuumBridge,
+    "MiniMaxH3RefModBridgeDisarm": MiniMaxH3RefModBridgeDisarm,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "MiniMaxH3RefModSave": "Save H3 RefMods",
+    "MiniMaxH3RefModMasterExtract": "Extract H3 RefMod Master",
+    "MiniMaxH3RefModInspect": "Inspect H3 RefMod",
+    "MiniMaxH3RefModAudioExtract": "Extract H3 Audio RefMod",
     "MiniMaxH3RefModExtract": "Extract H3 RefMod",
     "MiniMaxH3RefModFolderLoader": "Load H3 RefMod Folder",
     "MiniMaxH3RefModsLoader": "Load H3 RefMods",
     "MiniMaxH3RefModsAxis": "Load H3 RefMod Axis",
     "MiniMaxH3RefModApply": "Apply H3 RefMod",
     "MiniMaxH3RefModStepCurve": "H3 RefMod Step Curve",
+    "MiniMaxH3RefModConfig": "Fix H3 RefMod Config",
+    "MiniMaxH3RefModContinuumBridge": "Continuum RefMod Bridge",
+    "MiniMaxH3RefModBridgeDisarm": "Disarm H3 RefMod Bridge",
 }
 
 # The old Apply node was split into two (pack MINIMAX_H3_COND vs built-in
@@ -1543,6 +2212,7 @@ try:
     from comfy_api.latest import ComfyAPI
     from server import PromptServer
     if PromptServer.instance is not None:
+        register_routes(PromptServer.instance, _list_mod_names, _find_mod_path, read_refmod_meta)
         manager = PromptServer.instance.node_replace_manager
         manager.register(io.NodeReplace(
             new_node_id="MiniMaxH3RefModApply",

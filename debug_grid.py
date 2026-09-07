@@ -34,7 +34,8 @@ ACCENT_DIM = (122, 69, 21)
 
 _CURVE_SAMPLES = 160
 
-# where the concept shows up, per direction (mirror of the envelope)
+# where the concept shows up in the output, per direction — the envelope is
+# drawn on the same timeline, so it is strong exactly where the zone is
 _ZONES = {
     "concept_at_start": ((0.0, 1.0 / 3.0),),
     "concept_at_middle": ((1.0 / 3.0, 2.0 / 3.0),),

@@ -5,77 +5,70 @@
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
 
-## What's new (2026-08-16) — v0.1.0
+## What's new — v0.2.0 (unreleased)
 
-- **`H3 RefMod Step Curve` node** — control *when during denoising* the
-  ref is strongest, not just where in the video. Attach it between the
-  model loader and the sampler (`MODEL` → `MODEL`).
-- **Curve controls** — new `concept_at_middle` (`[0..1..0]`) and
-  `concept_at_ends` (`[1..0..1]`) directions, plus `sigmoid` / `tanh`
-  shapes, alongside `concept_at_start` / `concept_at_end`.
-- **`scramble_seed`** — seedable shuffle so a multi-ref mod "pops" a
-  different ref each run instead of always the same one.
-- **`copies` per loader row** — boost a ref 2-10x without duplicating rows.
-- **Curve-graph preview + PNG graph presets** — the Apply node's optional
-  `debug` output draws the strength envelope, and curves can be saved /
-  loaded as shareable images (the graph rides the PNG's metadata).
-- New example: [concept_curve.gif](examples/concept_curve.gif) — the same
-  mod with no curve, `concept_at_end`, and `concept_at_end` + 3 copies.
+- **RefMod Master** — extract image/video and audio references in one node,
+  with separate VAE inputs, one output bundle and a combined token budget.
+- **Integrated audio** — create and load audio RefMods directly in this pack;
+  no H3AudioMod installation required. Mix visual and audio refs in Apply.
+- **Known failure: voice transfer** — audio support includes an observed music
+  reference result, but speaker-identity transfer failed in current tests.
+  This update does not provide working voice cloning. See
+  [voice-transfer limitations](#voice-transfer-limitations).
+- **Library and inspector** — search/filter your collection, select loader
+  slots, inspect token costs and optionally preview stored visuals or audio.
+- **Save H3 RefMods** — a dedicated output node saves bundles without needing
+  a Preview, sampler or another downstream consumer.
+- **Linked loaders fixed** — unresolved names from upstream nodes no longer
+  fail queue validation, including both sides of the Axis loader.
+- **Subfolders and external drives** — recursive discovery and saving to the
+  registered RefMod root respect `extra_model_paths.yaml`.
+- **Stale references and cache fixes** — Step Curve no longer retains refs
+  from previous calls; loaders detect overwritten files. Bridge injection is
+  scoped to the MODEL branch, with cleanup after sampling errors.
+- **Extraction fixes** — masks follow image crops, video sampling stays
+  bounded when frame counts are unknown, and runtime token/copy limits are
+  enforced. Saves use atomic file replacement.
+- **Fewer dependencies and repeated operations** — removed sibling-pack imports;
+  shared extraction helpers and grouped multi-ref refinement reduce duplication.
 
-Version history lives in [CHANGELOG.md](CHANGELOG.md) and on [GitHub
-Releases](https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod/releases).
+Full history: [CHANGELOG.md](CHANGELOG.md). Validation and remaining limitations:
+[REVIEW_FOLLOWUP.md](REVIEW_FOLLOWUP.md).
 
-## TL;DR (for the busy / new to this)
+## RefMod in brief
 
-In MiniMax H3 you can give the AI a **reference** — an image, a video, even a
-GIF — to tell it *"look like this"*. That's powerful, but every reference
-gets loaded and processed every time you generate, which is slow and can
-"bleed" its look into everything else in your video.
+RefMod saves MiniMax H3 image, video or audio references as reusable
+`.safetensors` files. Load a saved reference, combine it with others, and pass
+the bundle to **Apply H3 RefMod**. **Extract H3 RefMod Master** brings visual
+and audio extraction into one node.
 
-This pack lets you **save that reference once as a tiny `.safetensors` file**
-(a "mod"), and then reuse it as many times as you want, whenever you want:
+Extraction uses the corresponding VAE. It does not train H3 weights or require
+the diffusion model. The visual mode named `training` refines a compressed
+latent; it is not LoRA training or supervised concept learning.
 
-- **Save once** — take your image/video/GIF, hit *Extract*, and it becomes a
-  small file on disk. No need to keep the original clip around or load it
-  again.
-- **Reuse anytime** — load the mod in one node, like picking a LoRA. Adjust
-  how strong it is with a simple number (strength), or blend a few mods
-  together (face + style + outfit, etc.).
-- **No more heavy reference loading** — you can leave the H3 reference input
-  **empty** and inject the mod through the conditioning instead. Faster
-  generation, and the reference only affects what you want it to affect.
-- **No training needed** — this is not a LoRA you train for hours; you just
-  encode your reference and save it.
-
-Scroll down to the **Examples (screenshots)** section to see the nodes in
-action.
-
-No-training **reference mods** for MiniMax H3 — the "fast LoRA" feel of H3's
-ref2video multimodal input, without the heavy cost of injecting full videos or
-training the model.
+Saving avoids re-encoding the source on each run. Compression can reduce the
+number of reference tokens processed during generation, at the cost of lost
+information. Encode mode keeps more detail but does not remove the attention
+cost of those tokens. Neither mode guarantees that only the desired attribute
+will transfer: identity, clothing, background and composition can still mix.
 
 ## Try it
 
 A ready-made example mod ships in the repo: **`mods/vanellope_example.safetensors`**.
 It appears as `vanellope_example` in the `Load H3 RefMods` dropdown after
-install — plug it into `Apply H3 RefMod (Cond)` at strength 1.0 and prompt for
+install — plug it into `Apply H3 RefMod` at strength 1.0 and prompt for
 a candy racer in a karting scene.
 
 ## Install
 
-1. **(Optional support) ComfyUI-MiniMaxH3** — this pack is **totally
-   optional**, purely a convenience: it only enables the `av_encoder` input
-   on Extract (encoder already loaded by the pack, instead of encoding the
-   video twice) and the pack-conditioning `Apply H3 RefMod` node. Everything
-   else — Extract with a plain `vae`, both loaders, the folder loader, and
-   `Apply H3 RefMod (Cond)` — works without it, so you can skip this step
-   entirely. If it's missing you just get a one-line warning at startup and a
-   clear error only if you actually use `av_encoder`. To install it anyway:
-   ComfyUI Manager → search "MiniMax H3", or clone into `custom_nodes/`:
-   
-   ```bash
-   git clone https://github.com/xiaolibai-sys/ComfyUI-MiniMaxH3 custom_nodes/ComfyUI-MiniMaxH3
-   ```
+1. Use a current ComfyUI with native MiniMax H3 support. RefMod does not
+   import or require ComfyUI-MiniMaxH3. Connect a standard H3 video VAE to
+   `vae`, the audio VAE to `audio_vae`, and native CONDITIONING to Apply.
+   Old `av_encoder` connections are supported by reading the VAERef video
+   checkpoint through ComfyUI's native VAE loader; they no longer load the
+   sibling pack's VAE implementation or its audio checkpoint. Prefer `vae`
+   to share an already loaded instance. Existing pack-conditioning objects
+   remain accepted by Apply without importing their package.
 
 2. **This pack**: clone into `custom_nodes/` and restart ComfyUI. Python
    deps (`safetensors`, `numpy`, `Pillow`) are in `requirements.txt` and are
@@ -90,276 +83,300 @@ a candy racer in a karting scene.
 Tested on Windows; `os.path`-based paths so it should work on Linux/Mac, but
 only Windows has been exercised so far.
 
-## The idea
+## What extraction actually optimizes
 
-H3's reference path works by injecting *reference tokens* into the packed
-sequence: the ref is VAE-encoded, patchified, projected, and every DiT block
-attends to those tokens. A video ref is heavy because it contributes
-**thousands** of tokens (a 2048px ref image alone is ~4000 tokens per frame).
+A saved visual latent enters H3 through the native reference-token path.
+That shares the model's reference mechanism, but does **not** establish parity
+with a complete native reference workflow: resizing, conditioning, prompt
+processing, sampling and other references can differ.
 
-A RefMod is the same reference, saved to disk so you don't re-encode it:
+| Visual mode | Operation | Tradeoff |
+| --- | --- | --- |
+| `encode` | Resize/preprocess and store the VAE encode | Keeps more reference detail; larger token cost. Useful as the baseline for identity comparisons. |
+| `training` | Pool the latent, then optionally refine it against the original VAE latent | Fewer tokens; detail and motion may be lost. |
 
-1. `mode = encode` — resize each ref to a target short edge (down only, like
-   the official node) and encode with the H3 VAE. The stored latent is what
-   the model attends to: at 1024px short edge that's ~1000 tokens per image
-   frame, at 2048px ~4000. (Old name: `full`.)
-2. `mode = training` — each ref is first resized to the same `ref_resolution`
-   short edge (it's pooled to a tiny grid anyway, so encoding at native
-   resolution is wasted compute — this is the main speed dial for training
-   mode), then average-pooled to a small grid — 8×8 latent = **64 tokens**,
-   with a couple of latent frames for motion (default 2), refined with a
-   few gradient steps that reconstruct the full latent (still model-free,
-   seconds). The refinement loop is the only "training" in the pack.
-   (Old name: `pooled`.)
+The `training` loss is MSE between the full latent and a trilinearly enlarged
+small latent. Only the small latent is optimized. No DiT, text instruction,
+identity recognizer or motion objective participates. `identity` is the number
+of refinement steps, despite its historical name; 0 means pooling only.
+Increasing it does not teach the model which attribute to preserve or discard.
 
-At generation time the latent is handed back through the **native `refs`
-payload**, so it flows through the exact same per-block attention machinery
-as a reference encoded live in the graph — encode mode at strength 1.0 is
-behaviorally the same ref the official node would inject.
-
-This is the H3 analog of the LTX "Mod" adapter: where LTXMod uses trained
-concept tokens + a hypernetwork predicting per-block AdaLN deltas, the H3
-model's own cross-attention over the compressed ref tokens does the work, so
-**no training and no 29B model load are needed**.
+`concept_type` is descriptive metadata, not a separate learning algorithm.
+The aliases `full` → `encode` and `pooled` → `training` remain supported.
 
 ## Storage
 
-Mods live in **`ComfyUI/models/refmods/`** — created on first run, next to
-`loras/` and `unet/` — and are registered as a first-class model folder.
-Extract and the CLI save there; the loader dropdowns read from there (and
-still load mods saved by older versions in the pack's own `mods/` folder, so
-your existing `VANELLOPE`/`tf2`/... files keep working).
+Mods are saved in the **first registered `refmods` folder**, including mappings
+from `extra_model_paths.yaml`. The fallback is `ComfyUI/models/refmods/`, created
+when saving. Set `is_default: true` in the YAML mapping to prioritize that root.
+A write failure is reported rather than silently switching drives. Config updates
+keep the original path of a loaded file. Loaders search all registered roots and legacy locations, including
+the pack's own `mods/` folder, so existing files keep working. The standalone CLI
+uses the folder registry available in its process; it does not load YAML mappings
+on its own.
 
-## File format
+Both **Load H3 RefMods** and **Load H3 RefMod Axis** scan subfolders too:
+`models/refmods/celebs/person.safetensors` appears as `celebs/person`.
+Names use `/` without the `.safetensors` extension; linked Windows names
+using `\` work too. Only files with RefMod metadata (`kind: image`, `video` or `audio`) are listed. `graph_presets/`, `.git/`, and `__pycache__/` trees
+are skipped. Extract saves to the selected root by default; `subfolder` is optional.
 
-A mod is one `.safetensors` with a JSON metadata block embedded in the
-header. File size is not cosmetic — it tracks how much visual information
-the ref carries:
+You can convert `mod_#`, `mod_a_#`, or `mod_b_#` to inputs and connect a
+STRING/combo output. Unresolved linked values are checked when the loader
+runs. `None`, an empty string, `"None"`, and `"(none)"` skip the slot;
+a resolved missing filename raises a missing-file error. Fixed dropdown
+values are still checked when queuing. After adding or moving files,
+refresh ComfyUI's node definitions to update the visible dropdowns.
 
-- **`mode = encode`** (default) stores the ref's full-resolution VAE encode:
-  a 1024px short-edge image is a 64×64 latent = 24×64×64 fp16 values ≈
-  **0.2 MB** per image frame. This is the mode that carries **identity** —
-  the model was trained on full-res refs, and this is exactly what the
-  official ref2video node injects (its 2048px "max" option exists
-  specifically for "best identity fidelity").
-- **`mode = training`** stores a tiny average-pooled grid (8×8, 2 frames =
-  `24×2×8×8` ≈ 6 KB), refined by gradient steps. Nearly free to inject, but
-  an 8×8 latent is a 16×16-pixel image — it carries concept/motion (colors,
-  general look, a dance), not fine identity.
+Loader regression checks (run with ComfyUI's Python from this pack):
+`python tests/test_loaders.py`. They use temporary safetensors files and
+ComfyUI's queue validator; no generation models are needed.
 
-This is why tiny mods feel weak on characters: no amount of `strength` adds
-information that isn't in the latent. Compare a LoRA's 100-400 MB, which
-stores weight deltas for billions of parameters; a full RefMod stores the
-actual encoded reference — a few hundred KB per image frame — which is the
-honest cost of identity.
+## Integrated audio, library and inspection
 
-### Pool size — the concept ↔ identity dial
+### One character extractor
 
-`pool_h` / `pool_w` on Extract is the concept ↔ identity control for pooled
-mode, and it's worth knowing before you extract:
+**Extract H3 RefMod Master** combines the visual extractor's inputs and controls
+with optional `audio` and `audio_vae` inputs. Connect the visual H3 VAE to `vae`
+(or the existing `av_encoder`) and the H3 audio VAE to `audio_vae`. Either modality
+can be omitted. Video-frame inputs do not implicitly include an audio track;
+connect the source loader's AUDIO output separately when needed.
 
-- **Small pool (8×8) = concept.** Few tokens, the mod keeps the *general
-  idea* — colors, the overall look, a dance move — and lets the model
-  improvise the framing, background and subject details.
-- **Big pool (16×16+) = identity.** More tokens, the mod keeps *specific
-  detail* — but also the framing, background and subjects of your refs.
-  Extract a concept at a high pool and the output can get "infected" by
-  your data: it starts copying the composition, the objects, the people in
-  your shots.
+The master extracts visual references first, then audio, returning one `mods`
+bundle for Apply/Inspect and a `details` string with paths and token totals.
+Visual `max_tokens` and `audio_max_tokens` are separate; `max_total_tokens` limits
+their combined cost (0 disables that extra limit). A failed extraction or budget
+check does not save either result. Each final file is saved atomically, but saving
+the pair is not a filesystem transaction.
 
-So **8×8 is the sweet spot for concepts, 16×16 for identity** — and the
-pool dial now goes up to **64×64** (1024 tokens/frame, encode-mode
-parity) for when you want training mode to compete with `encode` on faces
-without paying for the full-res encode. Same rule of thumb as `encode` vs
-`training` mode: more information stored in the latent = more identity,
-less = more freedom. (Token math: a `N×N` grid = `(N/2)²` tokens per
-frame, so 16×16 = 64, 32×32 = 256, 64×64 = 1024.)
+With `name=hero` and `subfolder=characters`, saving creates
+`characters/hero_visual.safetensors` and `characters/hero_audio.safetensors`.
+Select both in Load H3 RefMods to reconstruct the bundle after restarting.
+The internal visual extractor reports `(not saved)` because Master postpones
+saving until both extractions and the total-budget check succeed. Master's final
+`Created` / `Replaced` messages show the actual paths. `encode` and `training`
+both replace existing files at those paths; an older file without the modality
+suffix is a different destination. With `save=False`, Master only returns the bundle.
+These are appearance and voice references, not joint character training or a
+guarantee of audiovisual synchronization. The individual extractors remain available.
 
-### Data multiplier — rescuing short refs
+**Extract H3 Audio RefMod** accepts `AUDIO` and the H3 **audio** VAE (the
+32 kHz codec, not the video VAE). The implementation follows the tested
+ComfyUI-H3AudioMod encode path: stereo normalized `[1,32,2,T]` latents,
+40 frames/second, 2 tokens/frame, bounded 10-second encode chunks.
+`max_seconds` explicitly selects the initial duration of the clip. A token
+budget overflow raises an error by default; optional `truncate` keeps a
+contiguous prefix rather than resampling speech/music in latent time.
+Chunk boundaries may affect codec continuity; this is reference conditioning,
+not a promise of lossless audio reconstruction.
 
-A short video/GIF reference contributes very few tokens next to the main
-video's thousands, so it can get drowned out — especially in `training`
-mode where one second of footage is already compressed to a handful of
-frames. `multiplier` on Extract repeats the extracted latent N times along
-time (2-10): the model attends to the same ref data N times, so its
-influence scales roughly with N. Handy for a 2-3 frame gif of a pose or an
-expression that would otherwise be a whisper. File size grows with N, so
-use it sparingly in `encode` mode.
+Save audio to the selected RefMod storage root with an optional `subfolder`. Existing files
+from `models/audio_refmods/` using `audio_refmod_meta` load directly. Both
+common loaders, Apply, Step Curve, Config and the model-scoped bridge accept
+mixed visual/audio bundles. Keep different voices in separate files for
+independent strengths. New saves use format version 4; older visual mods
+remain readable. No `<Name>` prompt triggers are implemented.
 
-### Token cap — never inject 20K+ tokens by accident
+Both loaders now have a **RefMod library** button: search names, subfolders,
+concepts and descriptions, filter image/video/audio, choose a slot and Use.
+Refresh rescans the disk. Connected slots are protected from widget replacement.
+Close and Escape dismiss the library. Registered extra model roots are honored.
 
-`max_tokens` on Extract (0 = off, default **5120** — a good performance
-spot) hard-caps the total tokens the mod injects. When the stacked refs
-exceed it, the mod is cut in two cheap, loss-ordered passes:
-**near-duplicate latent frames are dropped first** (video refs are full of
-frames that differ only by codec noise — a dance loop, a static shot, a
-talking head — and each one still costs a token per spatial patch in every
-block), then the remaining frames are resampled to fit. The cap is honored
-after `multiplier`. It's a safety net, not a dial to lean on: a 1024px
-`encode`-mode video ref at 16 frames is already ~23K tokens, so lower
-`latent_frames` / `ref_resolution` when you know the budget ahead of time
-and you won't waste encode work.
+**Inspect H3 RefMod** reports paths, shapes, metadata, saved config and total
+cost after copies. Optional matching `vae` enables `stored` or
+`compare_strength` previews: image outputs show the first latent frame;
+audio outputs preview up to two seconds. Comparison appends the weakened
+preview after the stored preview. This shows stored information, not a
+prediction of generated identity/style quality.
+
+`max_total_tokens` on loaders/Apply/bridge limits the sum after copies
+(0 disables it). Oversized bundles fail explicitly. Extraction also fails
+when one frame alone exceeds its cap. Loaded-file cache checks file and
+sidecar changes, and is bounded to 256 MiB and 24 entries.
+
+Visual Extract offers opt-in presets: `manual` preserves current widgets;
+`identity_encode` selects encode/1024px; `style_experimental` selects an
+8×8 training grid; `motion_sequence` keeps an ordered temporal sequence.
+These are starting settings, not quality guarantees or semantic disentanglement.
+Both visual and audio Extract support an optional save subfolder.
+
+Validation: `python -m unittest discover -s tests -v` runs production-code
+regressions. `python gauntlet_harness.py --device cuda` compares resident,
+streaming and grouped multi-ref refinement with numerical parity checks.
+`python tests/audio_smoke.py PATH_TO_H3_AUDIO_VAE` exercises the real codec,
+safetensors roundtrip and native H3 reference layout without loading the DiT.
+
+## File format, resolution and token budget
+
+Each file contains a latent and JSON metadata in the safetensors header.
+Visual latents have shape `[1,24,T,H,W]`; audio latents use `[1,32,2,T]`.
+The Master saves two independent files when both modalities are present.
+
+Visual token count is **T × (H/2) × (W/2)**. H and W are even latent-grid
+dimensions, not image pixels. Audio uses **2 × T** tokens.
+
+| Visual latent grid | Tokens per latent frame |
+| --- | --- |
+| 8×8 | 16 |
+| 16×16 | 64 |
+| 32×32 | 256 |
+| 64×64 | 1024 |
+
+For example, a square 1024×1024 image encoded to a 64×64 latent costs 1024
+tokens and about 192 KiB of fp16 tensor data, plus metadata. A rectangular
+image with a 1024-pixel short edge can cost more. Four 16×16 latent frames
+cost 256 tokens; sixteen 64×64 frames cost 16,384 tokens before budget fitting.
+
+A small grid is spatial compression, **not a concept extractor**. It may retain
+colors and large structures while losing face detail, texture or useful motion.
+A larger grid preserves more information, including unwanted content. There
+is no validated universal 8×8 concept / 16×16 identity sweet spot.
+
+`multiplier` repeats the extracted visual latent along its time axis; loader
+`copies` repeats a reference block. Both increase token cost. Neither adds new
+information, and neither promises a proportional increase in influence.
+
+Visual `max_tokens` defaults to 5120 (0 disables it). Budget fitting drops
+near-duplicate latent frames, then resamples time if needed, after repetition.
+This can damage motion timing; inspect the resulting frame/token count. If a
+single spatial frame exceeds the cap, extraction raises an error. Audio instead
+uses the explicit error/prefix-truncation policy described above.
 
 ## Nodes (`MiniMax-H3/mod`)
 
-| Node                     | What it does                                                                                                                                                                    |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Extract H3 RefMod`      | two typed Autogrow inputs — **`ref_image_1`** (stills) and **`ref_video_1`** (video frames) — each grows its own next slot → encode (full-res) or training (refined pool) latent, saved as `.safetensors`. `max_tokens` (default 5120) hard-caps the injected token count (drops near-duplicate frames first, then resamples to fit) |
-| `Load H3 RefMod Folder`  | load every image/video in a folder as an ordered ref list → feed its `refs_bundle` into Extract for bulk extraction                                                             |
-| `Load H3 RefMods`        | one node, 1-8 mod dropdowns **with a typed strength + a `copies` boost each** (LoRA-loader style); `show_info` prints each mod's layout/token budget                                               |
-| `Load H3 RefMod Axis`    | A/B mod pairs on one **signed slider** each — negative uses mod A, positive uses mod B (e.g. a young↔old age dial)                                                              |
-| `Apply H3 RefMod`        | one node for both conditioning types — appends the bundle to a `MINIMAX_H3_COND` (ComfyUI-MiniMaxH3 pack) **or** the built-in `CONDITIONING` (`minimax_refs`); a curve split into `curve_direction` (constant / concept_at_start / concept_at_middle / concept_at_end / concept_at_ends) + `curve_shape` (linear / ease / sigmoid / tanh / exponential / stair / elastic / bump / dip…) + `curve_value` fades the ref across the video timeline; `scramble_seed` shuffles a multi-ref bundle (seedable, -1 = off) so a different ref leads each run; optional shared `graph_preset` (load a curve from `models/refmods/graph_presets/`) + `save_preset_as` (write one); optional `debug` IMAGE output — a 1024x1024 curve graph (direction/shape/value with the concept zone shaded) |
-| `H3 RefMod Step Curve`   | same curve widgets, but over the **denoise timeline** — attach between the model loader and sampler (`MODEL` → `MODEL`); re-mixes every ref per step (early steps lock composition/identity, late steps stay clean or refine detail) via a ComfyUI `DIFFUSION_MODEL` wrapper |
+| Node | Purpose |
+| --- | --- |
+| Extract H3 RefMod Master | Visual and/or audio extraction into one bundle, with separate VAE inputs. |
+| Extract H3 RefMod | Visual extraction, masks, compression and optional refinement. |
+| Extract H3 Audio RefMod | Audio extraction with duration and token limits. |
+| Save H3 RefMods | Save a bundle as an output node; no downstream connection required. |
+| Load H3 RefMod Folder | Ordered image/video references from a folder. |
+| Load H3 RefMods | Up to 8 slots with strength, copies and optional total budget. |
+| Load H3 RefMod Axis | Select A or B with a signed strength; 0 skips the slot. |
+| Apply H3 RefMod | Append refs to native CONDITIONING or an existing pack-conditioning object. |
+| H3 RefMod Step Curve | Change marked RefMod latents during denoising via the MODEL connection. |
+| Fix H3 RefMod Config | Persist Apply/Step Curve settings in mod metadata. |
+| Inspect H3 RefMod | Metadata, token totals and optional VAE previews. |
+| Continuum RefMod Bridge | Inject refs through the MODEL sampling hook. |
 
-The old single loader, multi loader, Info, Compose, preset and split-Apply
-nodes are gone — one loader with per-row strengths + per-row `copies` boost
-(2+ = inject the same mod twice/3x, the manual row-duplication trick as a
-knob — more copies = stronger reference, but each copy costs its full token
-count in every DiT block) + a `show_info` toggle and
-one Apply that accepts both conditioning types replace them. Old workflows
-saved with `Apply H3 RefMod (Cond)` auto-migrate to the merged Apply node at
-load time.
+Older `Apply H3 RefMod (Cond)` workflows migrate to the unified Apply node.
+The legacy Bridge Disarm node remains for compatibility; bridge state now
+belongs to the MODEL branch.
 
-### Reference strength (the honest math)
+### Saving without a Preview or sampler
 
-`strength` on each loader row (typed, 0-1) and `retention` on the Apply node
-weaken a ref by mixing its latent toward a heavily **blurred copy of itself**
-(`strength * z + (1 - strength) * blur(z)`). Scaling toward zero instead —
-the old behavior — pushes values out of the normalized latent distribution,
-so the model read them as grey patches: output greyed while identity never
-actually faded. Mixing toward random noise (the model's own
-`visual_cond_noise_aug`) is only a small-magnitude robustness augmentation;
-swept this far it reads as real-but-garbled content and decodes as a
-woven/static texture. A blurred copy stays smooth and in-distribution while
-still discarding the detail that makes a reference strong.
+Connect `Extract / Master / Loader → Save H3 RefMods` and queue the workflow.
+The Save node is an execution output, so its own output sockets may stay
+unconnected. Set the extractor's `save=False` to avoid saving twice; the Save
+node handles persistence. It also provides `mods` and `saved_paths` outputs.
 
-- `1.0` = full reference (behaviorally the same ref the official node injects).
-- Lower values fade identity smoothly toward "a soft, blurry version of the ref".
-- `0` = the mod is not injected at all.
-- `retention` on the Apply node is a typed master strength (0-1), so you
-  can type any value. MiniMax's retention levels map to: 1.0 =
-  `fully_preserved`, 0.7 = `partially_preserved`, 0.4 = `attribute_transfer`
-  (keep the style/attributes, not the identity), 0.15 = `weak_reference`,
-  0 = no reference.
+`filename_prefix` is prepended to each mod name, and `subfolder` is relative to
+the configured RefMod storage root. Existing destination files are replaced.
+Repeated copies of the same mod are written once; distinct mods with the same
+name receive numbered suffixes within the bundle. Files keep their stored
+latents/config; loader strengths remain in the output bundle and are not baked
+into the saved latents. As with other output nodes, ComfyUI may reuse cached
+results when inputs have not changed.
 
-### Ref strength over time (curve)
+### Strength and reference-frame curves
 
-The Apply node's curve is a per-frame envelope over the ref's latent
-timeline, split into **two plain dropdowns + one value** (no Curve widget
-needed). The dropdown names describe **where the concept shows up in the
-output**, which is the mirror of the strength envelope over the ref's own
-frames — that's why the old `decrease`/`increase` names felt backwards:
+Loader strength and Apply retention are multiplied. For a positive resulting
+weight `w`, the stored latent is transformed as:
 
-- `curve_direction` — where the concept lands: `concept_at_end` (default;
-  was `decrease`) locks the ref's literal footage in at the **start** and
-  releases it toward the end — the identity/character emerges in the second
-  half, without dragging the ref's background in. `concept_at_start` (was
-  `increase`) opens free from the ref and locks onto it near the **end** —
-  the concept shows early. `concept_at_middle` peaks mid-timeline
-  (`[0..1..0]` — the concept appears only in the middle of the video),
-  `concept_at_ends` holds both ends and dips in the middle (`[1..0..1]`).
-  `constant` keeps one strength for the whole video (today's original
-  behavior). Old `decrease`/`increase` values saved in workflows still
-  resolve to the same envelopes.
-- `curve_shape` — how the envelope travels between its endpoints: `linear`,
-  `ease` (smoothstep), `sigmoid` / `tanh` (smooth S-curves, `tanh` with a
-  steeper knee), `quadratic`, `cubic`, `exponential`, `stair` (stepped),
-  `elastic` (overshoots), `bump` (peak mid-video, for one specific action
-  like a glitch scene), `dip` (trough mid-video).
-- `curve_value` (0-1, default 1.0) — the non-zero endpoint ("user input"):
-  both endpoints for `constant` / `concept_at_ends`, the end for
-  `concept_at_start`, the start for `concept_at_end`, the mid peak for
-  `concept_at_middle`.
+```text
+w * latent + (1 - w) * blur(latent)
+```
 
-Each latent frame is mixed with `retention * curve(x)` (x = 0..1 across the
-frames) instead of one flat value. Defaults are **`concept_at_end` +
-`ease`** — the ref starts at full strength (identity locks in on the first
-frames) then fades out smoothly, which inserts a character without dragging
-the ref's background/framing into the rest of the video. For other moods
-pick `constant` + `linear` for a flat envelope (today's original behavior),
-`concept_at_start` + `exponential` for a slow build-up, `constant` + `bump`
-or `concept_at_middle` + `sigmoid` to keep the ref loud only mid-video, and
-`concept_at_ends` for a ref that frames the start and end but lets the
-middle breathe.
+A zero row/master strength drops the reference block. A zero **frame-curve**
+weight instead leaves a blurred frame in the block; it does not remove tokens.
+At 1, the stored latent is unchanged. At 0.4, the mixture is 40% original and
+60% blurred. This is not an attention weight or a percentage of identity.
+Blur can leave palette, framing and broad structure while discarding desired
+texture. Smooth identity fading and an in-distribution result are not guaranteed.
+
+The curve on Apply runs across **the reference's latent frames**, including
+stacked images. `concept_at_start`, `concept_at_middle`, `concept_at_end` and
+`concept_at_ends` are historical labels for where the envelope is strongest
+in that reference sequence. **They do not schedule an event in the output video.**
+
+`constant` is the default. `curve_shape` selects the envelope shape and
+`curve_value` its value; for one latent frame, value acts as a scalar cap.
+Printed effective strength is a summary of the configured weights, not a
+measurement of the model's actual attention or the resulting concept transfer.
+
+### Using RefMods with ComfyUI-H3-Continuum
+
+Connect `Load Model → Continuum RefMod Bridge → sampler.model`, and connect
+`mods` to the bridge. The bridge clones the MODEL and appends refs through
+ComfyUI's public outer-sampling hook before each chunk's conditioning is
+prepared. It restores the previous conditioning on completion, error or
+cancellation. There is no global bundle, TTL, or patch of Continuum code.
+Different model branches can carry different bundles. `enable=False` removes
+this bridge from its output clone. The old Disarm node is retained for saved
+workflows; use the bridge toggle or bypass its MODEL output instead.
+
 
 ### Ref scrambling (seed)
 
-A mod extracted from several images/videos holds multiple refs, and the
-model can keep "popping" the same one every run. The Apply node's
-`scramble_seed` (default **-1 = off**) shuffles the bundle's ref order and
-keeps a random subset, so a different ref leads each run:
+`scramble_seed=-1` disables scrambling and keeps all bundle entries in order.
+With a nonnegative seed, `scramble_mode=shuffle` changes only their order;
+`subset` selects up to `scramble_keep` entries. The selection is deterministic
+for the same seed and bundle. `legacy_subset` retains the old random-size subset
+behavior for workflows missing the new option. These operations act on bundle
+entries, not on frames inside one saved mod.
 
-- `-1` (default) — all refs, saved order (today's behavior, unchanged).
-- any seed ≥ 0 — deterministic shuffle + subset: the same seed always
-  produces the same scramble, different seeds vary which refs get injected
-  and which leads the timeline.
-- set the widget's control-after-generate to `randomize` and the seed
-  changes every run for automatic variation.
+### Curve graph and presets
 
-### Curve graph (preview) + shared graph presets
+Apply's `debug` IMAGE output plots the configured envelope, not a prediction
+of where a concept will appear. `save_preset_as` writes a PNG with embedded
+curve metadata under the selected RefMod root's `graph_presets/` folder.
+Choose it in `graph_preset` to override the manual curve widgets. Share that
+PNG to share the settings. Older JSON presets remain readable.
 
-The Apply node has an optional **`debug`** IMAGE output: a 1024x1024 curve
-graph showing the strength envelope — `direction` / `shape` / `value` with
-the concept zone shaded where the concept shows up, gridlines and a peak
-marker. Leave the output unconnected and nothing changes — it's pure
-visualization.
+### Ref strength over denoising steps
 
-Curves can also be shared as **graph presets** — and the preset *is* the
-preview. To save the current curve, type a name in the Apply node's
-`save_preset_as` field and run: it writes a PNG of the curve graph with the
-curve embedded in its image metadata
-(`ComfyUI/models/refmods/graph_presets/<name>.png`, created on first use
-next to the mods). To load one, pick it in the `graph_preset` dropdown
-(anything other than `(none)` overrides the curve widgets, and the graph
-shows `preset: <name>` so it's obvious where the values came from).
+Connect **H3 RefMod Step Curve** between the model loader and sampler.
+It applies an envelope over denoising progress, relative to the run's schedule
+start. This is different from the reference-frame curve and from output time.
+Early/late weighting can change the result, but there is no guarantee that it
+isolates composition, identity, texture or any particular semantic attribute.
 
-Sharing a curve is just sharing the preset **image** — it's both a visual
-preview and the machine-readable config, so a friend can drop your PNG into
-their `graph_presets/` folder, restart, and load the exact same curve. The
-metadata is a `graph` text chunk:
+The wrapper processes the current payload without retaining reference tensors
+between calls. It transforms only marked RefMod references; empty payloads pass
+through. Other reference latents are not directly modified, although generated
+content can still change through interactions among all conditioning inputs.
+Chained Step Curve nodes compose their transformations.
 
-```json
-{"direction": "concept_at_middle", "shape": "sigmoid", "value": 1.0}
-```
+### Fixing configs into a mod (`override`)
 
-Presets saved by earlier versions as plain `.json` files still load. New
-presets appear in the dropdown after a ComfyUI restart.
+**Fix H3 RefMod Config** stores your chosen Apply and Step Curve settings
+in the mod file. Recipients can reuse those settings, although results still
+depend on their model, prompt, sampler and other references:
 
-### Ref strength over denoising steps (step curve)
+1. **Creator:** tune the Apply + Step Curve until the concept behaves,
+   then set the same values on `Fix H3 RefMod Config` (wire `mods`
+   through it — `Loader → Config → Apply`). Run once: the config
+   (`retention` + `curve` + `step_curve`) is written into the mod's
+   safetensors metadata and the file is re-saved in place. Share the
+   `.safetensors` as usual.
+2. **User:** load the mod, flip **`override`** on Apply H3 RefMod (and/or
+   connect the bundle to H3 RefMod Step Curve's optional `mods` input and
+   flip its `override`) — the node reads the first mod in the bundle that
+   carries a config and uses *those* settings instead of the widgets.
+   `override` off (default) = today's behavior, manual parameters.
 
-**What it's for:** the frame curve above controls *where* the concept shows
-up in the video; `H3 RefMod Step Curve` controls *when during denoising*
-the ref is strongest — useful when the ref's background/framing bleeds into
-the output, because early and late steps shape very different things. It is
-a separate node you attach between the model loader and the sampler
-(`MODEL` → `MODEL`, same type, optional).
-
-The frame curve runs over the **video's timeline** and is baked into the ref
-latent once, before sampling. `H3 RefMod Step Curve` runs the **same curve
-widgets** over the **denoise timeline** instead, re-mixing every ref latent
-once per step at generation time:
-
-- **early steps (high sigma)** set global structure and identity;
-- **late steps (low sigma)** paint fine texture and grain.
-
-So the same directions mean: `concept_at_end` (default) keeps the refs at
-full strength for the early steps — composition and identity lock in first,
-then the ref is released for the final passes (clean texture, no ref
-**grain**); `concept_at_start` opens weak and locks full strength in the
-late steps — identity detail is refined at the very end; `constant` keeps
-one strength for every step (today's behavior). It composes with the frame
-curve (both can be on at once) and with `scramble_seed`, and it applies to
-every ref in the conditioning — pack mods and native ref2va refs alike.
-The mechanism is a ComfyUI `DIFFUSION_MODEL` wrapper (the same hook
-sage-attention/blockswap use), so no core edits are needed.
+If a bundle has no mod with a saved config, `override` falls back to the
+manual widgets and prints a note to the console — it never silently does
+nothing. The curve graph `debug` output shows the overridden curve, so it's
+obvious which settings actually ran.
 
 ### Concept axes (signed A/B sliders)
 
 `Load H3 RefMod Axis` pairs an A-side mod and a B-side mod on **one signed
 `value` slider** per row ([-1, 1]): negative values use the A mod, positive
 values use the B mod, and the magnitude is the reference strength (same 0-1
-math as the loader). A value of 0 skips the row. This makes an "age" dial
-out of two extractions:
+math as the loader). A value of 0 skips the row. This selects between two references; it does not learn a continuous semantic
+age axis. For example:
 
 1. Extract a mod from your **young** refs (baby photos) and another from your
    **old** refs (elder man).
@@ -367,61 +384,67 @@ out of two extractions:
    `value = -0.6` → young at 60% strength, `value = +0.8` → old at 80%,
    `value = 0` → no age reference at all.
 
-Same for any opposite pair: clean ↔ weathered, modern ↔ vintage, calm ↔
+Same for other contrasting references: clean ↔ weathered, modern ↔ vintage, calm ↔
 energetic. Rows are independent, so several axes can live in one node (up to
-8), and the output feeds the same `Apply H3 RefMod (Cond)` nodes with the
+8), and the output feeds the same `Apply H3 RefMod` nodes with the
 same `retention` master control.
 
-### Workflow
+### Minimal workflow
 
-1. Load H3 as usual (`MiniMaxH3Loader` + VAE loader + encoder loader).
-2. `Extract H3 RefMod`: plug **stills** into `ref_image_1` and **video
-   frames** into `ref_video_1` (each input grows its own `_2`, `_3`...
-   slots). The two types are tracked separately, so a multi-frame batch in
-   a video slot is always a motion ref and a still slot is always a single
-   frame.   Connect `av_encoder` (or `vae`) and a name. Default `mode = training` with
-   a 16×16×16 grid and `identity = 500` — a good balance of identity vs
-   token cost. `identity` is the dial that matters: higher clings to the
-   refs (more detail, but sticks to their framing/background), lower
-   deviates from the refs (more freedom, less detail), `0` = pure pooling.
-   `ref_resolution` applies to **both** modes now: training resizes to it
-   before encoding (the big speed lever — 512 is plenty for a pooled grid),
-   and encode stores the actual encode at it (1024 default, 2048 = 4× the
-   tokens). The dropdown is just `training`/`encode`; old mods saved as
-   `full`/`pooled` still load and normalize to these two.
-3. `Load H3 RefMods`: pick the mod from the dropdown and set its strength
-   (new mods appear after a reload). Stack a whole character: face mod at
-   1.0, a glitch/style mod at 0.4, a car/item mod at 1.0 — each row keeps
-   its own strength, and the model attends to them side by side like a
-   moodboard.
-4. `Apply H3 RefMod (Cond)` between your conditioning node and the sampler,
-   and type the `retention` strength (1.0 = fully preserved, down to 0 =
-   no reference).
+1. Connect images/video frames to **Extract H3 RefMod** or **Master**, with the
+   standard H3 video VAE. On Master, connect AUDIO and the H3 audio VAE if wanted.
+   Image slots use the first image of a batch; video slots preserve a sequence.
+2. Choose a name and optional subfolder. For a visual baseline, compare `encode`
+   against `training` using the same refs and generation settings. The visual
+   node defaults are `training`, 16×16 grid, `latent_frames=16`, `identity=500`,
+   `ref_resolution=1024`, and `max_tokens=5120`; presets can override some of them.
+3. Connect the output bundle directly to **Apply H3 RefMod**, or load the saved
+   file(s) with **Load H3 RefMods**. Connect your H3 conditioning to Apply and
+   its result to the sampler's matching conditioning input.
+4. Use **Inspect H3 RefMod** for stored information and token cost. Evaluate the
+   generation against a no-RefMod baseline with the same prompt and seed.
 
-Works with `MiniMaxH3Conditioning`, `MiniMaxH3ReferenceToVideo`, and any
-conditioning that carries refs/keyframes — the mod ref blocks are appended
-to the existing ones.
-
-### Describe the mod in your prompt
-
-A mod is a few KB of compressed attention — it makes the model *look at*
-your refs, but it doesn't *know* what they are. It's not a concept
-automation: if you don't tell the model what the mod contains, it has
-nothing to anchor on and you'll get a video just traveling through your
-data (which, honestly, is a cool effect on its own — all from a few KB in
-the conditioning).
-
-For reliable results, spell out what you extracted in the prompt, like
-pointing at what you want the model to focus on:
-
-- extracted a ginger woman → write **"a ginger woman"**
-- extracted a handcam walk → write **"pov handcam walking"**
-- extracted a dance → write **"person dancing"**Prompt + mod together are what make the character/concept actually show up
-  in the output.
+Describe the desired subject/action in the prompt and what should remain from
+other inputs. A prompt can clarify intent, but it does not guarantee selective
+transfer, exact dance/camera reproduction, face replacement or silence between
+spoken phrases. RefMod currently has no `<Name>` trigger parser.
 
 ## Examples (screenshots)
 
-Real graphs from development, straight from the ComfyUI canvas.
+Development examples; screenshots may show older names/defaults. Individual
+results are illustrations, not controlled benchmarks or quality guarantees.
+
+### Voice-transfer limitations
+
+Current voice tests did not reproduce the reference speaker's voice reliably.
+In one test, a masculine voice reference was supplied for a female character,
+but the output retained a feminine voice instead of matching the reference.
+Treat speaker-identity transfer / voice cloning as not working in this update,
+even though music-reference conditioning has produced a successful example.
+
+H3's architecture or checkpoint behavior may contribute, but the cause has
+not been isolated. There is also a known difference in the current RefMod
+integration: Apply appends audio latents after text encoding, while the native
+H3 reference node also presents numbered audio labels during tokenization.
+Until a matched native-versus-RefMod comparison rules out that difference,
+we cannot attribute the failure exclusively to H3 or rule out RefMod integration.
+
+### Music reference with RefMod
+
+In this example, the author supplied a music clip to RefMod and reported that
+the generated video included the reference music as background audio.
+
+- [Listen to the input music](examples/audio_input.mp3)
+- [Watch the generated video](examples/audio_refmod_example.mp4)
+
+Prompt used, unchanged:
+
+```text
+[Shot1]
+The ginger woman is walking on an office and dancing, the camera viewer is tracking in her head following every rotation and position.
+
+music playing on background.
+```
 
 ### Extracting
 
@@ -444,9 +467,10 @@ the preview text:
 
 ![Load H3 RefMod Folder in use](examples/load_ref_folder_example.png)
 
-### Concept vs identity (pool size in action)
+### Pool-size examples
 
-The two training-mode pools compared — 8×8 concept vs 16×16 identity:
+Observed results with 8×8 and 16×16 pools. These examples do not establish
+a universal concept/identity split:
 
 ![Concept pool 8x8 — with and without the mod](examples/concept_example_with_without_comparission.gif)
 
@@ -462,7 +486,7 @@ JoJo Bizarre-style rendering:
 
 The same mod run three ways — no curve, `concept_at_end`, and
 `concept_at_end` with the loader's `copies` set to 3 (the same row injected
-three times, noticeably stronger):
+three times; this example showed a stronger effect):
 
 ![Curve controls — nothing vs concept at the end vs concept at the end + 3 copies](examples/concept_curve.gif)
 
@@ -483,7 +507,7 @@ the prompt so the model has an anchor for what it's seeing.
 
 ### Bulk folder loading
 
-`Load H3 RefMod Folder` reads every image (png/jpg/webp/bmp/gif) and video
+`Load H3 RefMod Folder` reads supported images (png/jpg/webp/bmp/gif) and video
 (mp4/webm/mov/mkv/avi) in a folder — images first, then videos, by filename.
 Type an absolute path, or a folder name inside ComfyUI's `input/` (empty =
 `input/` itself). Feed its `refs_bundle` output into `Extract H3 RefMod` to
@@ -497,92 +521,73 @@ ref_image_1 (hand-picked shots) ────────────────
 
 Bundle refs are appended after the autogrow refs, so `ref_image_1` still
 anchors the canvas. Unreadable files are skipped with a note; `max_items`
-caps the count and `max_frames` caps video length.
+caps the item count and `max_frames` caps the number of sampled video frames.
 
-### Multi-ref concept mods (moodboards — near-LoRA style)
+### Multiple references and merge
 
-Every ref plugged into the Extract node is encoded independently and then
-**stacked along the time axis** — each one becomes its own latent frame, so
-different expressions, settings, angles, or a dance move stay distinct
-instead of averaging into a blur. The model attends to the whole stack like
-a short video ref. In `encode` mode, videos are uniformly sampled to
-`latent_frames` full-res frames; in `training` mode they are pooled to that
-many frames. All refs share one spatial canvas (anchored on the first
-ref), so mixed portrait/landscape refs stack cleanly — put your most
-important framing first.
+By default, visual refs are encoded separately and stacked along the latent
+time axis. A video contributes a sequence, not just one frame. Spatial resizing,
+temporal pooling/sampling and the token cap can still discard information.
+In encode mode, multiple refs use a common canvas based on the first source;
+other aspect ratios can be center-cropped to fit it.
 
-A character concept from a few photos of different expressions, plus one
-video of them dancing:
+With `merge=True` in training mode, one grid minimizes mean reconstruction
+error across targets. For equal target shapes, this has the same gradient as
+reconstructing their average. That is not semantic discovery of what the
+examples share: misaligned faces, motion and backgrounds can average into blur.
+Compare merge against stacking rather than assuming it removes unwanted content.
 
-```
-ref_image_1 (face) ───────────┐
-ref_image_2 (expression) ─────┤  Extract H3 RefMod ─> my_disney_char.safetensors
-ref_image_3 (full body) ──────┤  (encode, resolution 1024)
-ref_video_1 (dance video) ────┘
-```
+The current refinement groups same-shaped targets on CPU and processes gradient
+contributions sequentially. This reduces repeated work; it does not change the
+objective into DreamBooth, Textual Inversion or control/target edit training.
 
-Token budget at `encode`/1024px: (n_images + n_video_frames) × ~1000.
-4 refs → ~3000 tokens — comparable to a couple of official refs; the mod is
-a few MB. At `training`/16×16: (n_images + n_video_frames) × 256 — a 4-ref
-mod is ~1000 tokens with `identity` deciding how much of it survives.
+### Motion-only extraction (experimental)
 
-## Standalone extraction (image/video files)
+`motion_only` in training mode encodes normalized absolute frame differences,
+`abs(frame[t+1] - frame[t])`. These highlight change, including camera motion,
+lighting variation and compression artifacts. They can still reveal contours
+and appearance, and absolute differences do not explicitly encode direction.
+
+This is not optical flow, a pose trajectory or a trained motion-conditioning
+channel. H3 may interpret the difference images as visual content. Still-image
+refs retain their appearance with a warning. Treat this mode as an experiment,
+not as guaranteed separation of motion from identity or background.
+
+## Standalone extraction (visual only)
+
+Use the Python environment that runs ComfyUI. Both commands set their mode
+explicitly; the CLI default is `training`.
 
 ```bash
-# full-res identity mod (default; recommended for characters)
+# Store the VAE encode as an identity comparison baseline
 python custom_nodes/ComfyUI-MiniMaxH3Mod/extract_mod.py \
-    --image char.png \
-    --vae path/to/h3_video_vae.safetensors \
+    --image char.png --vae path/to/h3_video_vae.safetensors \
     --name my_character --mode encode --resolution 1024
-```
 
-```bash
-# concept/motion mod (training mode, 8x8 grid — the concept sweet spot)
+# Compressed video reference; evaluate motion loss against encode
 python custom_nodes/ComfyUI-MiniMaxH3Mod/extract_mod.py \
-    --video dance.mp4 \
-    --vae path/to/h3_video_vae.safetensors \
-    --name dance --pool 8 --latent-frames 16 --identity 500
+    --video dance.mp4 --vae path/to/h3_video_vae.safetensors \
+    --name dance --mode training --pool 16 --latent-frames 16 --identity 500
 ```
 
-```bash
-# training-mode identity mod (16x16 grid keeps more detail, identity steps refine it)
-python custom_nodes/ComfyUI-MiniMaxH3Mod/extract_mod.py \
-    --image char.png \
-    --vae path/to/h3_video_vae.safetensors \
-    --name char_id --pool 16 --latent-frames 16 --identity 1000
-```
+Other options include `--pool-w`, `--max-tokens`, `--multiplier`, `--subfolder`,
+`--output`, `--max-edge`, `--max-frames`, `--description`, `--concept-type` and
+`--device`. Run `--help` for defaults. Video decode uses OpenCV or imageio.
+Files use embedded metadata; legacy JSON sidecars remain supported.
 
-Options: `--mode encode|training` (`full`/`pooled` still accepted),
-`--resolution` (both modes' short edge — training mode's speed lever),
-`--pool` (training mode spatial grid, even), `--latent-frames`, `--identity`
-(training-mode refinement steps; higher = clings to refs, lower = deviates),
-`--multiplier` (repeat the ref N times along time so a short video/GIF isn't
-drowned out by the
-main video's tokens), `--output`, `--max-edge`, `--device`. Run it with
-the same Python that runs ComfyUI (it imports `comfy` from the install it
-lives in). Video loading uses opencv-python if
-available, otherwise imageio + imageio-ffmpeg.
+## Validation and experimental training status
 
-Output: a **single** `models/refmods/<name>.safetensors` with the metadata
-embedded in the file header — loadable by `Load H3 RefMods` and shareable on
-CivitAI or similar as one file (no sidecar). Mods saved by older versions of
-the pack (in `custom_nodes/ComfyUI-MiniMaxH3Mod/mods/` or with a sidecar
-`.json`) still load fine.
+Run production regressions with `python -m unittest discover -s tests -v`.
+The suite covers loaders/queue validation, storage, caches, curves, bridge,
+Master orchestration and audio storage. Codec checks used a real audio VAE;
+these are not full H3 voice/visual quality evaluations.
 
-## Notes
-
-- The mod is visual-only (no audio refs). Audio refs still work from the
-  regular reference nodes.
-- Multi-ref mods use the video-kind layout; refs are ordered by slot number.
-- `strength`/`retention` weaken refs with the model's native noise
-  augmentation (see above); `1.0` = the full reference.
-- `full` mode matches the official node's ref pipeline: resize down to the
-  target short edge, encode, patchify — the model sees a ref at a
-  resolution it was trained on. `pooled` keeps the area-normalized RoPE
-  extent but at thumbnail resolution, so it reads as a downscaled
-  reference.
-- Old pooled mods (your `tf2`, `shakycam`, `minemovie`, `VANELLOPE`) still
-  load fine; re-extract them in `full` mode for identity.
+`gauntlet_harness.py` compares three implementations of the existing model-free
+MSE refinement. `tests/h3_gradient_probe.py` is a separate gradient-feasibility
+experiment with a small randomly initialized H3 architecture. Its success does
+not establish compatibility with a full INT8/ConvRot checkpoint, memory fit,
+concept learning or edit quality. A train-through-H3 ComfyUI node is not yet
+implemented. See [REVIEW_FOLLOWUP.md](REVIEW_FOLLOWUP.md) for recorded results.
 
 ## License
 

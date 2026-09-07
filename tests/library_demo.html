@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><title>RefMod library UI test</title>
+<style>body{background:#0d1218;color:#ddd;font:16px system-ui;padding:30px}button{font:inherit;padding:12px}</style>
+<h1>RefMod library — UI fixture</h1><p>Sample entries for browser interaction tests.</p>
+<button id="open">Open library</button><p id="selection">No selection</p>
+<script type="module">
+import {openRefModLibrary} from "../web/library_dialog.js";
+const node={widgets:[{name:"mod_1",value:"(none)",callback(value){document.querySelector("#selection").textContent=value}}],inputs:[]};
+const data=[
+ {name:"celebs/person",kind:"image",concept:"identity",description:"Portrait reference",tokens:1024,path:"models/refmods/celebs/person.safetensors"},
+ {name:"voices/narrator",kind:"audio",concept:"voice",description:"Warm narrator",tokens:800,path:"models/refmods/voices/narrator.safetensors"},
+ {name:"styles/ink",kind:"video",concept:"style",description:"Ink illustration",tokens:256,path:"models/refmods/styles/ink.safetensors"}
+];
+document.querySelector("#open").onclick=()=>openRefModLibrary(node,async()=>data);
+</script>
