@@ -5,16 +5,25 @@
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
 
-## Character voice extension — v0.3.0 (unreleased)
+## Appearance and voice in the original nodes — v0.3.1 (unreleased)
 
-This branch includes upstream v0.2.0 at `7604ef4` plus reusable character
-profiles with complete native reference conditioning and synchronized speaking
-video support. Optional attention binding provides an all-H3 experiment.
+**Extract H3 RefMod** can now save images and voice recordings, or a speaking
+video with its soundtrack, in **one safetensors file**. Use the original
+**Load H3 RefMods + Apply H3 RefMod** with ComfyUI's official
+**MiniMax H3 Reference to Video**. Write the complete prompt and dialogue in
+the official node; no separate character dialogue inputs are required.
 
-Start with [the implementation plan](VOICE_IMPLEMENTATION_PLAN.md),
-[character installation/workflows](CHARACTERS.md), and
-[controlled voice comparisons](VOICE_TESTING.md).
-Generation quality with the released H3 checkpoint remains to be measured.
+Start with [the native-node setup guide](NATIVE_REFMODS.md) and
+[five ready-to-open workflows](examples/native_refmods). The loader now has
+a CLIP input/output for cached reference presentation, selects one saved voice
+example per character by default, and prints the actual Picture/Video/Audio map.
+Existing character safetensors load without re-extraction.
+
+This branch includes upstream v0.2.0 at `7604ef4`. The previous
+[character/binding experiments](VOICE_TESTING.md) remain available for saved
+workflow compatibility. The simplified path has CPU integration checks;
+multi-character voice accuracy with the released H3 checkpoint still needs
+render testing. [Implementation plan](NATIVE_REFMOD_AUDIO_PLAN.md).
 
 ## What's new — v0.2.0
 

@@ -116,6 +116,10 @@ def read_refmod_meta(path_no_ext: str) -> Optional[Dict]:
             for key in (META_KEY, "audio_refmod_meta"):
                 if key in meta:
                     return json.loads(meta[key])
+            if "h3_character_meta" in meta:
+                profile = json.loads(meta["h3_character_meta"])
+                return {"kind": "character", "name": profile.get("name", "character"),
+                        "description": profile.get("description", ""), "concept_type": "identity"}
     except Exception:
         pass
     jpath = path_no_ext + ".json"
@@ -601,6 +605,10 @@ class H3RefMod:
         per_frame = (self.latent_h // 2) * (self.latent_w // 2)
         return self.latent_t * per_frame
 
+    @property
+    def storage_bytes(self):
+        return self.latent.numel() * self.latent.element_size()
+
     # ── native ref block ──────────────────────────────────────────────
 
     def ref_block(self, strength: float = 1.0,
@@ -701,6 +709,9 @@ class H3RefMod:
             raise ValueError(
                 f"{path_no_ext}.safetensors has no RefMod metadata "
                 f"(header key '{META_KEY}' or sidecar .json missing).")
+        if meta.get("kind") == "character":
+            from .refmod_profile import ProfileRefMod
+            return ProfileRefMod.load_profile(path_no_ext, meta)
         # clone drops the file mmap, so the file isn't locked on Windows and
         # can be re-saved over the same name
         latent = load_file(path_no_ext + ".safetensors", device=device)["latent"].clone()

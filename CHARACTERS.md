@@ -1,5 +1,11 @@
 # Character RefMods: appearance and voice
 
+**For the simpler v0.3.1 workflow, use [NATIVE_REFMODS.md](NATIVE_REFMODS.md).**
+It saves and loads combined appearance/voice files through the original RefMod
+nodes and ComfyUI's official Reference to Video node. Your existing character
+files work there. The separate character nodes documented below remain for
+older workflows and optional experiments.
+
 For the v0.3.0 extension on upstream `7604ef4`, start with
 [the updated import and comparison guide](VOICE_TESTING.md). It adds a full-prompt
 conditioner, an upstream image/audio RefMod importer, and three controlled
@@ -61,6 +67,12 @@ Drag [01_extract_images_and_audio.json](examples/characters/01_extract_images_an
 onto ComfyUI.
 
 1. Select the H3 video VAE and H3 audio VAE in the two VAE Loader nodes.
+   Check the actual `vae_name` dropdowns, not just the node titles:
+   `minimax_h3_video_vae_fp16.safetensors` goes to `video_vae` and
+   `minimax_h3_audio_vae_fp32.safetensors` goes to `audio_vae` (or equivalent
+   H3 codec files). Still images require the video VAE too. An audio VAE
+   connected to `video_vae` caused `too many values to unpack (expected 3)`
+   in earlier builds; extraction now checks codec metadata before encoding.
 2. Upload the three character images and two recordings. All five inputs
    should represent **one character and one voice**. One image and one audio
    clip also work; the additional inputs are optional.
@@ -155,11 +167,13 @@ nine images and three recordings. You can select `second` for a different saved
 voice example. With a paired speaking video, `first` keeps its complete
 video/audio pair.
 
-This implementation checks a combined budget of **nine images, three paired
-videos, three audio-bearing references, and 15 seconds of reference audio**.
-Exceeding the budget gives an actionable error instead of silently dropping
-another character's data. `max_reference_tokens = 0` disables the additional
-user token cap; setting a cap also raises an error if exceeded.
+These older character nodes check a combined budget of **nine images, three
+videos and three audio-bearing references**. The previous 15-second aggregate
+check has been removed: it was a local validation policy, not a demonstrated
+H3 architecture limit. Exceeding a count or configured token budget gives an
+error instead of dropping another character's data. `max_reference_tokens = 0`
+disables the additional user token cap. The simplified native workflow has
+explicit per-character recording selection; see [NATIVE_REFMODS.md](NATIVE_REFMODS.md).
 
 Try one character with new words first. Then compare the three-character
 workflow against your native workflow using the same characters, dialogue,

@@ -113,7 +113,9 @@ def check_conditioning():
 
 
 def check_workflows():
+    from comfy_extras.nodes_preview_any import PreviewAny
     registry = dict(nodes.NODE_CLASS_MAPPINGS)
+    registry["PreviewAny"] = PreviewAny
     registry.update(pack.NODE_CLASS_MAPPINGS)
     for module in (h3, nodes_audio, nodes_video, nodes_custom_sampler):
         for name in dir(module):
@@ -123,7 +125,9 @@ def check_workflows():
     for name in ("LoadH3CharacterClip", "ExtractH3Character", "LoadH3Character", "H3CharacterDialogueConditioning"):
         assert registry[name].INPUT_TYPES()
     count = 0
-    for path in sorted((ROOT / "examples" / "characters").glob("*.json")):
+    paths = list((ROOT / "examples" / "characters").glob("*.json"))
+    paths += list((ROOT / "examples" / "native_refmods").glob("*.json"))
+    for path in sorted(paths):
         graph = json.loads(path.read_text(encoding="utf-8"))
         by_id = {n["id"]: n for n in graph["nodes"]}
         links = {link[0]: link for link in graph["links"]}
@@ -134,16 +138,34 @@ def check_workflows():
             cls = registry[node["type"]]
             schema = cls.INPUT_TYPES()
             inputs = {**schema.get("required", {}), **schema.get("optional", {})}
+            def compatible(actual, expected):
+                return (actual == expected or "*" in (actual, expected)
+                        or "COMFY_MATCHTYPE_V3" in (actual, expected))
             for port in node["inputs"]:
-                assert port["name"] in inputs, (path, node["type"], port)
-                assert port["type"] == inputs[port["name"]][0], (path, port)
-            assert [p["type"] for p in node["outputs"]] == list(cls.RETURN_TYPES), (path, node["type"])
+                if "." in port["name"] and port["name"].split(".", 1)[0] in inputs:
+                    parent, child = port["name"].split(".", 1)
+                    entry = inputs[parent]
+                    assert entry[0] == "COMFY_AUTOGROW_V3", (path, port)
+                    template = entry[1]["template"]
+                    prefix = template["prefix"]
+                    assert child.startswith(prefix) and 0 <= int(child[len(prefix):]) < template["max"]
+                    expected = next(iter(template["input"]["required"].values()))[0]
+                else:
+                    assert port["name"] in inputs, (path, node["type"], port)
+                    expected = inputs[port["name"]][0]
+                assert compatible(port["type"], expected), (path, port, expected)
+            assert len(node["outputs"]) == len(cls.RETURN_TYPES), (path, node["type"])
+            assert all(compatible(p["type"], t) for p, t in zip(node["outputs"], cls.RETURN_TYPES)), (path, node["type"])
             supplied = {p["name"] for p in node["inputs"] if p["link"] is not None}
             supplied.update(node["properties"].get("test_widget_names", []))
             assert set(schema.get("required", {})) <= supplied, (path, node["type"], supplied)
             # Widget names/order are included for repeatable schema checks.
             names = node["properties"].get("test_widget_names", [])
             assert len(names) == len(node["widgets_values"]), (path, node["type"])
+            if path.parent.name == "native_refmods":
+                ordinary = [name for name in names if name not in ("control_after_generate", "format.codec")]
+                schema_order = [name for name in inputs if name in ordinary]
+                assert ordinary == schema_order, (path, node["type"], ordinary, schema_order)
             for name, value in zip(names, node["widgets_values"]):
                 if name in ("control_after_generate", "format.codec"):
                     continue
@@ -151,7 +173,7 @@ def check_workflows():
                 entry = inputs[name]
                 options = entry[0] if isinstance(entry[0], list) else entry[1].get("options", []) if len(entry) > 1 else []
                 # Files are selected on the user's installation.
-                if options and name not in ("image", "audio", "vae_name", "clip_name", "unet_name", "character_file"):
+                if options and name not in ("image", "audio", "vae_name", "clip_name", "unet_name", "character_file") and not name.startswith("mod_"):
                     allowed = [x["key"] if isinstance(x, dict) else x for x in options]
                     assert value in allowed, (path, name, value, allowed)
         for link_id, source, out_slot, target, in_slot, kind in graph["links"]:

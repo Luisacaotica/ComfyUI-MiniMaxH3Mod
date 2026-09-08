@@ -51,11 +51,11 @@ class CharacterReference:
     duration: float = 0.0
 
     def validate(self):
-        if self.kind not in ("image", "audio", "video_audio"):
+        if self.kind not in ("image", "audio", "video", "video_audio"):
             raise ValueError(f"Unsupported character reference kind: {self.kind!r}")
         if not math.isfinite(self.duration) or self.duration < 0:
             raise ValueError("Reference duration must be finite and non-negative.")
-        if self.kind in ("image", "video_audio"):
+        if self.kind in ("image", "video", "video_audio"):
             _tensor(self.visual, (1, 24, None, None, None), "H3 video latent")
             if self.visual.shape[-1] % 2 or self.visual.shape[-2] % 2:
                 raise ValueError("H3 video latent spatial dimensions must be even.")
@@ -76,7 +76,7 @@ class CharacterReference:
                 raise ValueError("Audio duration disagrees with the 40 Hz H3 latent grid.")
         elif self.audio is not None:
             raise ValueError("Use a paired video reference to store a soundtrack.")
-        if self.kind == "video_audio":
+        if self.kind in ("video", "video_audio"):
             _tensor(self.timestamps, (len(self.frames),), "Vision timestamps")
             if self.timestamps[0] < 0 or self.timestamps[-1] >= self.duration:
                 raise ValueError("Vision timestamps fall outside the paired clip.")
@@ -112,7 +112,7 @@ class CharacterReference:
         if self.visual is not None:
             block.update(latent=self.visual.clone(), latent_h=self.visual.shape[3],
                          latent_w=self.visual.shape[4])
-        if self.kind == "video_audio":
+        if self.kind in ("video", "video_audio"):
             block["latent_t"] = self.visual.shape[2]
         if self.audio is not None:
             block.update(audio_latent=self.audio.clone(), ref_audio_t=self.audio.shape[-1])
@@ -134,8 +134,8 @@ class H3CharacterMod:
             raise ValueError("Invalid character metadata.")
         if not isinstance(self.character_id, str) or not self.character_id:
             raise ValueError("Character identifier is missing.")
-        if not 1 <= len(self.references) <= 12:
-            raise ValueError("A character must contain 1-12 references.")
+        if not 1 <= len(self.references) <= 64:
+            raise ValueError("A character must contain 1-64 stored references.")
         for ref in self.references:
             ref.validate()
         if not any(r.visual is not None for r in self.references):
@@ -152,7 +152,7 @@ class H3CharacterMod:
         seconds = sum(r.duration for r in self.references if r.audio is not None)
         return f"{self.name}: {kinds}; {seconds:.2f}s audio; {self.token_count:,} reference tokens"
 
-    def save(self, path, overwrite=False):
+    def save(self, path, overwrite=False, refmod_metadata=None):
         self.validate()
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -175,7 +175,10 @@ class H3CharacterMod:
         fd, temporary = tempfile.mkstemp(prefix=".character-", suffix=".tmp", dir=path.parent)
         os.close(fd)
         try:
-            save_file(tensors, temporary, metadata={META_KEY: json.dumps(meta, allow_nan=False)})
+            header = {META_KEY: json.dumps(meta, allow_nan=False)}
+            if refmod_metadata is not None:
+                header["refmod_meta"] = json.dumps(refmod_metadata, allow_nan=False)
+            save_file(tensors, temporary, metadata=header)
             if overwrite:
                 os.replace(temporary, path)
             else:
@@ -217,6 +220,6 @@ def read_character_metadata(path):
         raise ValueError("Unsupported H3 Character format version.")
     if meta.get("model_family") != MODEL_FAMILY:
         raise ValueError("This character is not compatible with MiniMax H3 Ref2VA.")
-    if not isinstance(meta.get("references"), list) or not 1 <= len(meta["references"]) <= 12:
+    if not isinstance(meta.get("references"), list) or not 1 <= len(meta["references"]) <= 64:
         raise ValueError("Invalid character reference list.")
     return meta

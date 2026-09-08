@@ -88,7 +88,10 @@ class LoaderTests(unittest.TestCase):
                         if "_a_" in field or "_b_" in field:
                             inputs["value_" + field.rsplit("_", 1)[1]] = -1 if "_a_" in field else 1
                         self.assertIs(cls.VALIDATE_INPUTS(**inputs), True)
-                        self.assertEqual(cls().load(**inputs), ([], ""))
+                        result = cls().load(**inputs)
+                        self.assertEqual(result[:2], ([], ""))
+                        if cls is N.MiniMaxH3RefModsLoader:
+                            self.assertIsNone(result[2])
 
     def test_recursive_listing_filters_metadata_and_presets(self):
         self.save_mod("root")
@@ -162,7 +165,7 @@ class LoaderTests(unittest.TestCase):
     def test_nested_runtime_both_loaders_and_windows_separators(self):
         self.save_mod("celebs/person", value=3)
         self.assertIs(N.MiniMaxH3RefModsLoader.VALIDATE_INPUTS(mod_1="celebs\\person"), True)
-        bundle, _ = N.MiniMaxH3RefModsLoader().load(mod_1="celebs\\person", strength_1=0.6, copies_1=2)
+        bundle, _, _ = N.MiniMaxH3RefModsLoader().load(mod_1="celebs\\person", strength_1=0.6, copies_1=2)
         self.assertEqual(len(bundle), 2)
         self.assertEqual(bundle[0][1], 0.6)
         self.assertEqual(bundle[0][0].latent.flatten()[0].item(), 3)

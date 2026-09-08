@@ -62,6 +62,12 @@
           "type": "STRING",
           "links": [],
           "slot_index": 1
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "links": [],
+          "slot_index": 2
         }
       ],
       "title": "Select matching visual + voice RefMods",

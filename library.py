@@ -17,9 +17,10 @@ def library_entries(names, find_path, read_meta):
         try:
             t = int(meta.get("latent_t", 0))
             h, w = int(meta.get("latent_h", 0)), int(meta.get("latent_w", 0))
+            tokens = (int(meta.get("selected_tokens", 0)) if kind == "character" else
+                      (t * 2 if kind == "audio" else t * (h // 2) * (w // 2)))
         except (TypeError, ValueError):
             continue
-        tokens = t * 2 if kind == "audio" else t * (h // 2) * (w // 2)
         entries.append({"name": name, "kind": kind, "path": path + ".safetensors",
                         "concept": meta.get("concept_type", "generic"),
                         "description": meta.get("description", ""),

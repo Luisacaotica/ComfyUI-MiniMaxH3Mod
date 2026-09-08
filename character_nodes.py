@@ -79,6 +79,28 @@ def _encoder_name(vae):
     return f"{type(model).__module__}.{type(model).__name__}" if model is not None else type(vae).__name__
 
 
+def _validate_vae(vae, kind):
+    # ComfyUI exposes both codecs as VAE sockets. Check available wrapper
+    # metadata before either encoder allocates VRAM; retain latent validation
+    # for compatible wrappers that do not expose all of these attributes.
+    expected = ({"latent_channels": 24, "latent_dim": 3, "output_channels": 3}
+                if kind == "video" else
+                {"latent_channels": 32, "latent_dim": 2, "output_channels": 2})
+    mismatch = any(getattr(vae, key, None) not in (None, value)
+                   for key, value in expected.items())
+    sample_rate = getattr(vae, "audio_sample_rate", None)
+    # ComfyUI also defines audio_sample_rate on visual VAEs, so its presence
+    # alone cannot identify an audio codec.
+    mismatch = mismatch or (kind == "audio" and sample_rate not in (None, SAMPLE_RATE))
+    if mismatch or not callable(getattr(vae, "encode", None)):
+        detail = ("Still images also use the H3 video VAE." if kind == "video"
+                  else "Voice recordings require the H3 32 kHz audio VAE.")
+        raise ValueError(
+            f"Incorrect VAE at {kind}_vae: received {_encoder_name(vae)}. "
+            f"Select the MiniMax H3 {kind.upper()} VAE in the connected VAE Loader's "
+            f"vae_name dropdown and check its connection. The node title does not select the model. {detail}")
+
+
 def _encode_audio(vae, waveform):
     sample_rate = getattr(vae, "audio_sample_rate", SAMPLE_RATE)
     if sample_rate != SAMPLE_RATE:
@@ -159,6 +181,8 @@ class ExtractH3Character:
         path = characters_dir() / f"{name}.safetensors"
         if save and path.exists() and not overwrite:
             raise FileExistsError(f"{path.name} exists. Enable overwrite or change the character name.")
+        _validate_vae(video_vae, "video")
+        _validate_vae(audio_vae, "audio")
         images = [x for x in (image_1, image_2, image_3) if x is not None]
         audios = [x for x in (audio_1, audio_2) if x is not None]
         refs = []

@@ -1,0 +1,218 @@
+{
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VAELoader",
+      "pos": [
+        20,
+        130
+      ],
+      "size": [
+        420,
+        140
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "H3 VIDEO VAE (appearance)",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "test_widget_names": [
+          "vae_name"
+        ]
+      },
+      "widgets_values": [
+        "minimax_h3_video_vae_fp16.safetensors"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "VAELoader",
+      "pos": [
+        20,
+        340
+      ],
+      "size": [
+        420,
+        140
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "H3 AUDIO VAE (voice)",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "test_widget_names": [
+          "vae_name"
+        ]
+      },
+      "widgets_values": [
+        "minimax_h3_audio_vae_fp32.safetensors"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "MiniMaxH3RefModExtract",
+      "pos": [
+        940,
+        140
+      ],
+      "size": [
+        480,
+        860
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 1
+        },
+        {
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mods",
+          "type": "H3_REF_MODS",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "title": "Extract H3 RefMod \u2014 one appearance + voice file",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3RefModExtract",
+        "test_widget_names": [
+          "name",
+          "mode",
+          "concept_type",
+          "background_retention",
+          "ref_resolution",
+          "pool_h",
+          "pool_w",
+          "latent_frames",
+          "identity",
+          "merge",
+          "motion_only",
+          "multiplier",
+          "max_tokens",
+          "description",
+          "save",
+          "extraction_preset",
+          "subfolder",
+          "video_file",
+          "audio_start_seconds",
+          "audio_duration_seconds"
+        ]
+      },
+      "widgets_values": [
+        "character_a",
+        "encode",
+        "identity",
+        0.0,
+        768,
+        16,
+        16,
+        16,
+        0,
+        false,
+        false,
+        1,
+        0,
+        "",
+        true,
+        "manual",
+        "characters",
+        "speaking_character.mp4",
+        0.0,
+        5.0
+      ]
+    },
+    {
+      "id": 9,
+      "type": "Note",
+      "pos": [
+        20,
+        -100
+      ],
+      "size": [
+        1380,
+        190
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Start here",
+      "properties": {
+        "Node name for S&R": "Note",
+        "test_widget_names": [
+          "text"
+        ]
+      },
+      "widgets_values": [
+        "Select both matching H3 VAEs. Upload your speaking video to ComfyUI/input and enter its filename in video_file. Both frames and soundtrack are extracted from the same interval. Set a name and Queue: this original extractor saves one models/refmods/characters/name.safetensors. Use 03 or 04 in this folder to generate through the official Reference to Video node. Existing files with this name are replaced."
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      3,
+      0,
+      "VAE"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      1,
+      "VAE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "version": 0.4,
+  "extra": {
+    "ds": {
+      "scale": 0.65,
+      "offset": [
+        30,
+        150
+      ]
+    }
+  },
+  "last_node_id": 9,
+  "last_link_id": 2
+}

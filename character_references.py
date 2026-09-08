@@ -71,17 +71,17 @@ def assemble_references(characters, max_tokens=0, av_layout="paired"):
             raise ValueError("Use Extract/Load H3 Character or Import H3 RefMods as Character.")
         mod.validate()
         refs.extend((owner, ref) for ref in mod.references)
-    order = {"image": 0, "video_audio": 1, "audio": 2}
+    order = {"image": 0, "video": 1, "video_audio": 1, "audio": 2}
     refs.sort(key=lambda pair: order[pair[1].kind])
     n_images = sum(ref.kind == "image" for _, ref in refs)
-    n_videos = sum(ref.kind == "video_audio" for _, ref in refs)
+    n_videos = sum(ref.kind in ("video", "video_audio") for _, ref in refs)
     n_audio = sum(ref.audio is not None for _, ref in refs)
     duration = sum(ref.duration for _, ref in refs if ref.audio is not None)
-    if n_images > 9 or n_videos > 3 or n_audio > 3 or duration > 15.0001:
+    if n_images > 9 or n_videos > 3 or n_audio > 3:
         raise ValueError(f"H3 reference limit exceeded: {n_images} images, {n_videos} videos, "
                          f"{n_audio} voice clips, {duration:.2f}s audio. Use at most 9 images, "
-                         "3 videos, 3 voice clips and 15s total audio. Select 'first' voice "
-                         "in Load H3 Character or extract shorter clips for a multi-character cast.")
+                         "3 videos and 3 voice clips in this legacy character workflow. Select 'first' voice "
+                         "in Load H3 Character, or use Load H3 RefMods with the official Reference to Video node.")
     tokens = sum(ref.token_count for _, ref in refs)
     if max_tokens and tokens > max_tokens:
         raise ValueError(f"Characters need {tokens:,} reference tokens, above the {max_tokens:,} budget. "
@@ -94,15 +94,17 @@ def assemble_references(characters, max_tokens=0, av_layout="paired"):
             counters["image"] += 1
             labels[owner]["visual"].append(f"<Picture {counters['image']}>")
             items.append({"type": "image", "data": ref.vision_pixels()})
-        elif ref.kind == "video_audio":
-            counters["audio"] += 1
+        elif ref.kind in ("video", "video_audio"):
+            if ref.audio is not None:
+                counters["audio"] += 1
             counters["video"] += 1
             audio, video = f"<Audio {counters['audio']}>", f"<Video {counters['video']}>"
             labels[owner]["visual"].append(video)
-            labels[owner]["audio"].append(audio)
-            pairing.append(f"{audio} is the synchronized soundtrack of {video}.")
-            items.extend([{"type": "audio"}, {"type": "video", "data": ref.vision_pixels(),
-                                                "timestamps": ref.timestamps.tolist()}])
+            if ref.audio is not None:
+                labels[owner]["audio"].append(audio)
+                pairing.append(f"{audio} is the synchronized soundtrack of {video}.")
+                items.append({"type": "audio"})
+            items.append({"type": "video", "data": ref.vision_pixels(), "timestamps": ref.timestamps.tolist()})
         else:
             counters["audio"] += 1
             labels[owner]["audio"].append(f"<Audio {counters['audio']}>")

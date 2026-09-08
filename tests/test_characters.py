@@ -237,6 +237,11 @@ class MediaTests(unittest.TestCase):
 
 
 class VideoVAE:
+    audio_sample_rate = 44100  # Present even on native ComfyUI visual VAEs.
+    latent_channels = 24
+    latent_dim = 3
+    output_channels = 3
+
     def encode(self, pixels):
         t = 1 if len(pixels) == 1 else 2 + ((len(pixels) - 5) // 17) * 5
         return torch.ones(1, 24, t, pixels.shape[1] // 16, pixels.shape[2] // 16)
@@ -244,6 +249,9 @@ class VideoVAE:
 
 class AudioVAE:
     audio_sample_rate = 32000
+    latent_channels = 32
+    latent_dim = 2
+    output_channels = 2
 
     def encode(self, pixels):
         assert pixels.shape[-1] == 2  # Comfy VAE wrapper consumes channel-last.
@@ -285,6 +293,30 @@ class NodeTests(unittest.TestCase):
         mod, _ = self.nodes.ExtractH3Character().extract("video", VideoVAE(), AudioVAE(), character_clip=clip)
         self.assertEqual([r.kind for r in mod.references], ["video_audio"])
         mod.validate()
+
+    def test_wrong_vae_selection_fails_before_either_encode(self):
+        cases = ((AudioVAE(), AudioVAE(), "video_vae"),
+                 (VideoVAE(), VideoVAE(), "audio_vae"),
+                 (AudioVAE(), VideoVAE(), "video_vae"))
+        for video, audio, socket in cases:
+            with self.subTest(socket=socket, video=type(video), audio=type(audio)):
+                with patch.object(video, "encode") as video_encode, patch.object(audio, "encode") as audio_encode:
+                    with self.assertRaisesRegex(ValueError, f"Incorrect VAE at {socket}.*vae_name"):
+                        self.nodes.ExtractH3Character().extract("wrong", video, audio,
+                            image_1=torch.zeros(1, 320, 320, 3),
+                            audio_1={"waveform": torch.zeros(1, 1, 32000), "sample_rate": 32000})
+                    video_encode.assert_not_called()
+                    audio_encode.assert_not_called()
+                self.assertFalse((self.nodes.characters_dir() / "wrong.safetensors").exists())
+
+    def test_wrong_audio_rate_fails_before_visual_encode(self):
+        video, audio = VideoVAE(), AudioVAE()
+        audio.audio_sample_rate = 44100
+        with patch.object(video, "encode") as video_encode, patch.object(audio, "encode") as audio_encode:
+            with self.assertRaisesRegex(ValueError, "Incorrect VAE at audio_vae.*32 kHz"):
+                self.nodes.ExtractH3Character().extract("wrong_rate", video, audio, save=False)
+            video_encode.assert_not_called()
+            audio_encode.assert_not_called()
 
     def test_invalid_mixed_inputs_and_path(self):
         with self.assertRaises(ValueError):

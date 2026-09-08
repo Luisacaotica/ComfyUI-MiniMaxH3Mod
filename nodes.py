@@ -65,6 +65,8 @@ from .common import (
 )
 from . import continuum_bridge
 from .audio import make_audio_mod
+from .refmod_profile import ProfileRefMod
+from .refmod_native import prepare_clip, reference_map, validate_apply, APPLIED_KEY
 from .core import (
     CONCEPT_TYPES,
     CURVE_DIRECTIONS,
@@ -194,7 +196,7 @@ def _list_mod_names() -> List[str]:
             continue
         seen.add(name)  # match _find_mod_path's first-search-directory priority
         meta = read_refmod_meta(stem)
-        if isinstance(meta, dict) and meta.get("kind") in ("image", "video", "audio"):
+        if isinstance(meta, dict) and meta.get("kind") in ("image", "video", "audio", "character"):
             names.add(name)
     _MOD_LIST_CACHE_KEY, _MOD_LIST_CACHE_VAL = key, sorted(names)
     return _MOD_LIST_CACHE_VAL
@@ -247,7 +249,7 @@ def _cache_mod(path, mod):
     _MOD_CACHE[key] = mod
     _MOD_CACHE_STAMPS[key] = _file_stamp(path)
     while _MOD_CACHE and (len(_MOD_CACHE) > _MOD_CACHE_MAX or
-            sum(m.latent.numel() * m.latent.element_size() for m in _MOD_CACHE.values()) > _MOD_CACHE_BYTES):
+            sum(m.storage_bytes for m in _MOD_CACHE.values()) > _MOD_CACHE_BYTES):
         evicted = next(iter(_MOD_CACHE))
         _MOD_CACHE.pop(evicted)
         _MOD_CACHE_STAMPS.pop(evicted, None)
@@ -524,6 +526,8 @@ def _resolve_folder(folder: str) -> str:
 
 
 def _summarize(mod: H3RefMod) -> str:
+    if isinstance(mod, ProfileRefMod):
+        return mod.report()
     if mod.kind == "audio":
         return f"{mod.name}: audio, {mod.latent_t / 40:.2f}s, {mod.token_count} tokens"
     mb = mod.latent.numel() * mod.latent.element_size() / 1024 / 1024
@@ -532,6 +536,8 @@ def _summarize(mod: H3RefMod) -> str:
 
 
 def _info_lines(mod: H3RefMod) -> List[str]:
+    if isinstance(mod, ProfileRefMod):
+        return [mod.report(), f"  Saved: {mod.path}.safetensors"]
     opt = mod.optimize_steps
     if mod.mode == "encode":
         opt = f"n/a ({mod.optimize_steps} — encode mode stores the actual encode)"
@@ -612,6 +618,10 @@ def _ref_blocks(mods, retention, curve=None, seed=-1, scramble_mode="legacy_subs
     summaries = []  # (name, effective average multiplier)
     for mod, strength in items:
         eff = min(1.0, max(0.0, strength * factor))
+        if isinstance(mod, ProfileRefMod):
+            blocks.extend(mod.ref_blocks(eff, curve))
+            summaries.append((mod.name, eff))
+            continue
         used_curve = curve
         if (mod.latent_t <= 1 and isinstance(curve, tuple) and len(curve) == 3
                 and isinstance(curve[0], str) and str(curve[0]) != "constant"):
@@ -737,10 +747,15 @@ class MiniMaxH3RefModsLoader:
                            "copies = noticeably stronger reference, but each copy costs its full "
                            "token count in every DiT block, so it slows down inference and eats "
                            "VRAM — 2-3 copies is the sweet spot, 10x will be very slow."})
-        return {"required": required, "optional": {"max_total_tokens": ("INT", {"default": 0, "min": 0, "max": 1048576})}}
+        optional = {"max_total_tokens": ("INT", {"default": 0, "min": 0, "max": 1048576}),
+                    "clip": ("CLIP", {"tooltip": "For combined character files: connect CLIP Loader here, then this node's clip output to the official MiniMax H3 Reference to Video."})}
+        for i in range(1, cls.MAX_SLOTS + 1):
+            optional[f"voice_reference_{i}"] = ("INT", {"default": 1, "min": 0, "max": 64,
+                "tooltip": "Saved voice example for this character: 1 = first (default), 2 = second, 0 = all. Selection does not alter the file."})
+        return {"required": required, "optional": optional}
 
-    RETURN_TYPES = ("H3_REF_MODS", "STRING")
-    RETURN_NAMES = ("mods", "prompt_hint")
+    RETURN_TYPES = ("H3_REF_MODS", "STRING", "CLIP")
+    RETURN_NAMES = ("mods", "prompt_hint", "clip")
     FUNCTION = "load"
     CATEGORY = "MiniMax-H3/mod"
 
@@ -753,7 +768,7 @@ class MiniMaxH3RefModsLoader:
     def IS_CHANGED(cls, show_info=False, **kwargs):
         return _mods_changed(kwargs)
 
-    def load(self, show_info=False, max_total_tokens=0, **kwargs):
+    def load(self, show_info=False, max_total_tokens=0, clip=None, **kwargs):
         _check_loader_numbers(self.INPUT_TYPES()["required"], kwargs)
         rows = []  # (mod, strength, copies)
         for i in range(1, self.MAX_SLOTS + 1):
@@ -761,7 +776,11 @@ class MiniMaxH3RefModsLoader:
             strength = float(kwargs.get(f"strength_{i}", 1.0))
             if not name or strength <= 0.0:
                 continue
-            rows.append((_load_mod(name), min(1.0, max(0.0, strength)),
+            mod = _load_mod(name)
+            if isinstance(mod, ProfileRefMod):
+                mod = replace(mod, voice_reference=kwargs.get(f"voice_reference_{i}", 1))
+                print("[RefMod character] " + mod.report())
+            rows.append((mod, min(1.0, max(0.0, strength)),
                          int(kwargs.get(f"copies_{i}", 1))))
         loads = []
         for mod, strength, copies in rows:
@@ -783,7 +802,11 @@ class MiniMaxH3RefModsLoader:
         hint = _prompt_hint([(m, s) for m, s, _ in rows])
         if hint:
             print(f"[MiniMaxH3RefModsLoader] prompt_hint: {hint}")
-        return (loads, hint)
+        mapping = reference_map(loads)
+        if mapping:
+            hint = mapping + ("\n" + hint if hint else "")
+            print("[RefMod reference map]\n" + mapping)
+        return (loads, hint, prepare_clip(clip, loads))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -986,6 +1009,7 @@ class MiniMaxH3RefModApply(io.ComfyNode):
                 curve_direction="constant", curve_shape="linear", curve_value=1.0,
                 strength_curve=None, scramble_seed=-1, graph_preset="", save_preset_as="",
                 override=False, scramble_mode="legacy_subset", scramble_keep=1, max_total_tokens=0):
+        native_profiles = validate_apply(conditioning, mods, scramble_seed)
         # workflows saved before the curve split pass the old single preset name
         curve = strength_curve if strength_curve is not None \
             else (curve_direction, curve_shape, curve_value)
@@ -1019,6 +1043,11 @@ class MiniMaxH3RefModApply(io.ComfyNode):
                 print(f"[MiniMaxH3RefModApply] override: using config from '{m.name}' "
                       f"(retention={retention:.2f}, curve={curve[0]} + {curve[1]} "
                       f"@ {float(curve[2]):.2f})")
+        if native_profiles:
+            factor = RETENTION.get(retention, 1.0) if isinstance(retention, str) else float(retention)
+            if not math.isfinite(factor) or factor <= 0:
+                raise ValueError("Combined RefMods require retention > 0 after reference labels are encoded. "
+                                 "To disable a character, set its strength to 0 in Load H3 RefMods instead.")
         img = render_debug_grid(curve, preset_name)
         if save_preset_as:
             saved = _save_graph_preset(save_preset_as, curve, img)
@@ -1032,7 +1061,15 @@ class MiniMaxH3RefModApply(io.ComfyNode):
             out = []
             for t in conditioning:
                 d = dict(t[1])
-                d["minimax_refs"] = list(d.get("minimax_refs", [])) + blocks
+                if native_profiles:
+                    profile_blocks = [b for b in blocks if b.get("refmod_profile")]
+                    order = {"image": 0, "video": 1, "video_audio": 1, "audio": 2}
+                    profile_blocks.sort(key=lambda b: order[b["kind"]])
+                    legacy_blocks = [b for b in blocks if not b.get("refmod_profile")]
+                    d["minimax_refs"] = profile_blocks + list(d.get("minimax_refs", [])) + legacy_blocks
+                    d[APPLIED_KEY] = True
+                else:
+                    d["minimax_refs"] = list(d.get("minimax_refs", [])) + blocks
                 out.append([t[0], d])
             print(f"[MiniMaxH3RefModApply] retention={retention} "
                   f"({len(blocks)} ref block(s) injected)")
@@ -1310,6 +1347,9 @@ class MiniMaxH3RefModContinuumBridge:
     def arm(self, model, mods, enable=True, retention=1.0,
             curve_direction="constant", curve_shape="linear", curve_value=1.0,
             scramble_seed=-1, scramble_mode="legacy_subset", scramble_keep=1, max_total_tokens=0):
+        if enable and any(isinstance(mod, ProfileRefMod) and strength > 0 for mod, strength in mods):
+            raise ValueError("Combined appearance/voice RefMods need the official Reference to Video "
+                             "CLIP preparation and Apply H3 RefMod. The Continuum bridge does not prepare reference labels.")
         flat_curve = (curve_direction == "constant"
                       and curve_shape == "linear" and curve_value >= 1.0)
         curve = None if flat_curve else (curve_direction, curve_shape, curve_value)
@@ -1502,6 +1542,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="MiniMaxH3RefModExtract",
+            is_output_node=True,
             display_name="Extract H3 RefMod",
             description=(
                 "Turn one or more references of the same concept into a RefMod. "
@@ -1639,6 +1680,16 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "the mod and printed in the info block — documentation only, no wiring."),
                 io.Boolean.Input("save", default=True, label_on="save", label_off="don't save",
                     tooltip="Save the mod to mods/ so Load H3 RefMods can pick it up later."),
+                io.Audio.Input("audio", optional=True, tooltip="Voice of this character. Saved in the same file as the visual references."),
+                io.Vae.Input("audio_vae", optional=True, tooltip="H3 audio VAE; the existing vae input is the H3 video VAE."),
+                io.Autogrow.Input("refs_audio", optional=True,
+                    template=io.Autogrow.TemplatePrefix(input=io.Audio.Input("ref_audio"),
+                                                       prefix="ref_audio_", min=0, max=10)),
+                io.String.Input("video_file", default="", optional=True,
+                    tooltip="Optional speaking-video file, relative to ComfyUI/input or absolute. Extracts BOTH its frames and soundtrack together."),
+                io.Float.Input("audio_start_seconds", default=0.0, min=0.0, max=86400.0, optional=True),
+                io.Float.Input("audio_duration_seconds", default=5.0, min=0.25, max=15.0, optional=True,
+                    tooltip="Seconds saved from each connected audio source or speaking video. Existing video-frame inputs are assumed to be 24 fps."),
             ],
             outputs=[
                 io.Custom("H3_REF_MODS").Output("mods",
@@ -1653,7 +1704,9 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 ref_resolution=1024, pool_h=16, pool_w=16, latent_frames=16,
                 identity=500, multiplier=1, max_tokens=0, description="", save=True,
                 concept_type="generic", mask=None, background_retention=0.0, subfolder="",
-                merge=False, motion_only=False, extraction_preset="manual", **legacy) -> io.NodeOutput:
+                merge=False, motion_only=False, extraction_preset="manual", audio=None, audio_vae=None,
+                refs_audio=None, video_file="", audio_start_seconds=0.0, audio_duration_seconds=5.0,
+                **legacy) -> io.NodeOutput:
         name = _sanitize_name(name)
         if extraction_preset == "identity_encode":
             mode, ref_resolution, identity, merge, motion_only = "encode", 1024, 0, False, False
@@ -1716,6 +1769,23 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 if src is not None:
                     norm = _normalize_ref(src, label="folder reference")
                     ordered.append((norm, norm.shape[0] > 1))
+        if audio is not None or any(v is not None for v in (refs_audio or {}).values()) or str(video_file).strip():
+            from .refmod_extract_audio import extract_profile
+            ordered = [(_normalize_ref(src, label="character reference"), is_video) for src, is_video in ordered]
+            mod = extract_profile(name, ordered, vae, audio_vae, audio, refs_audio, video_file,
+                                  audio_start_seconds, audio_duration_seconds, ref_resolution,
+                                  mode, pool_h, pool_w, identity, description, merge, motion_only, multiplier, mask)
+            stored_tokens = sum(r.token_count for r in mod.profile.references)
+            if max_tokens and stored_tokens > max_tokens:
+                raise ValueError(f"Combined extraction has {stored_tokens:,} stored reference tokens; max_tokens={max_tokens}. "
+                                 "Use a lower reference resolution/shorter source interval, or raise max_tokens (0 disables the cap).")
+            if save:
+                mod.path = mod_output_path(name, subfolder)
+                mod.save(mod.path)
+                _cache_mod(mod.path, mod)
+            print("[Extract H3 RefMod] Combined appearance + voice: " + mod.report()
+                  + (f"\nSaved: {mod.path}.safetensors" if save else " (not saved)"))
+            return io.NodeOutput([(mod, 1.0)])
         if not ordered:
             raise ValueError(
                 "MiniMaxH3RefModExtract: connect at least one image to "
@@ -1988,6 +2058,12 @@ class MiniMaxH3RefModInspect:
                             "shape": list(mod.latent.shape), "tokens": mod.token_count,
                             "strength": row_strength, "description": mod.description,
                             "concept_type": mod.concept_type, "saved_config": mod.config})
+            if isinstance(mod, ProfileRefMod):
+                details[-1].update(selection=mod.report(), stored_references=len(mod.profile.references),
+                                   selected_references=[{"kind": r.kind, "duration": r.duration,
+                                       "visual_shape": list(r.visual.shape) if r.visual is not None else None,
+                                       "audio_shape": list(r.audio.shape) if r.audio is not None else None}
+                                       for r in mod.selected_references()])
         report = json.dumps({"total_tokens": _check_token_budget(mods, 0), "refs": details}, indent=2, ensure_ascii=False)
         images = torch.zeros(1,64,64,3)
         audio = {"waveform": torch.zeros(1,2,1), "sample_rate": 32000}
@@ -2093,6 +2169,10 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         schema = MiniMaxH3RefModExtract.define_schema()
+        # Master remains the upstream separate-file workflow; combined files
+        # use the original Extract node. Avoid duplicate inherited audio ports.
+        schema.inputs = [port for port in schema.inputs if port.id not in {
+            "audio", "audio_vae", "refs_audio", "video_file", "audio_start_seconds", "audio_duration_seconds"}]
         schema.node_id = "MiniMaxH3RefModMasterExtract"
         schema.display_name = "Extract H3 RefMod Master"
         schema.description = (

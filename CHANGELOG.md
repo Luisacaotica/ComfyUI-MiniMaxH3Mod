@@ -5,8 +5,31 @@ All notable changes are tracked here. Each version is also published as a
 so you can keep using an older version if a new one changes something you
 rely on.
 
+## v0.3.1 — unreleased native RefMod workflow
+
+- Extend the original **Extract H3 RefMod** to save appearance and audio in one
+  safetensors file. Accept multiple images/audio examples or a speaking-video
+  filename, preserving the paired timeline and all stored voice recordings.
+- Extend **Load H3 RefMods** with CLIP preparation and per-slot voice selection;
+  keep the existing mods/prompt_hint output indices. Default to one recording
+  per character and report the exact Picture/Video/Audio reference labels.
+- Keep ComfyUI's official **MiniMax H3 Reference to Video** unchanged. The full
+  user prompt reaches its tokenizer unchanged; **Apply H3 RefMod** injects
+  matching cached latents in presentation order. Reject mismatched bundles,
+  double Apply, post-encode scrambling and removal of numbered references.
+- Load earlier character safetensors directly through the original loader;
+  preserve legacy image/audio formats and existing experimental node IDs.
+- Remove the earlier blanket 15-second aggregate rejection. It was a local
+  validation policy, not a verified H3 architecture limit. Selected-reference
+  token budgets remain available; larger counts are not a proven quality gain.
+- Add five native-node workflow JSONs, a setup guide, real-tokenizer/official-node
+  integration tests and workflow schema checks. Model forwards use CPU doubles;
+  multi-character voice quality still requires GPU render testing.
+
 ## v0.3.0 — unreleased character extension
 
+- Validate character extractor VAE selections before encoding, with explicit
+  loader/socket guidance when audio and video codecs are mixed up.
 - Integrate upstream v0.2.0 at `7604ef4`, preserving Master/audio/library/loader
   fixes and upstream node IDs.
 - Add **H3 Character Reference Conditioning** for unchanged full prompts,

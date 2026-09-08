@@ -85,7 +85,7 @@ def main():
                      "connect matching image_2/image_3 or image batches in loader order. Video/pooled "
                      "stacks must be re-extracted from source; filenames cannot recover synchronization."}),
                  node(2, "MiniMaxH3RefModsLoader", "Select matching visual + voice RefMods", 20, 30, widgets,
-                      [("mods", "H3_REF_MODS", [1]), ("prompt_hint", "STRING", [])]),
+                      [("mods", "H3_REF_MODS", [1]), ("prompt_hint", "STRING", []), ("clip", "CLIP", [])]),
                  node(3, "LoadImage", "Matching original source image", 480, 30, {"image": "character_a.png"},
                       [("IMAGE", "IMAGE", [2]), ("MASK", "MASK", [])]),
                  node(4, "ImportH3RefModsAsCharacter", "Save reusable character", 980, 30,

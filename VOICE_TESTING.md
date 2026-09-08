@@ -1,5 +1,10 @@
 # Test character voices with the upstream update
 
+**Recommended starting point: [the v0.3.1 native-node guide](NATIVE_REFMODS.md).**
+It uses the original Extract/Load/Apply nodes and the official Reference to Video
+prompt field. The comparison and binding workflows below are older optional
+experiments; they are not required to use combined files.
+
 This extension includes upstream commit `7604ef4` and adds complete reusable
 character conditioning. H3 still generates the scene, speech and lip movement
 together. Start with a single voice and new words, then test two and three voices.
@@ -102,7 +107,8 @@ After a successful one-voice check, use:
 - [09_compare_2_characters.json](examples/characters/09_compare_2_characters.json)
 - [10_compare_3_characters.json](examples/characters/10_compare_3_characters.json)
 
-Use one short voice reference per character and at most 15 seconds total audio.
+For initial comparisons, use one short voice reference per character, around
+five seconds each. This is a test setup, not a claimed aggregate architecture limit.
 Start with the same three seeds for each variant. Disable conflicting attention
 overrides, block replacements and compilation while evaluating Voice Binding.
 See [VOICE_BINDING.md](VOICE_BINDING.md) for its mechanism and boundaries.
