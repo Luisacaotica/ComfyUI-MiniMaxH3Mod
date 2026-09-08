@@ -274,6 +274,24 @@ class FeatureTests(unittest.TestCase):
         self.assertIn("audio",schema["optional"])
         self.assertIn("audio_vae",schema["optional"])
 
+    def test_large_reference_widget_budgets(self):
+        for node in (N.MiniMaxH3RefModExtract, N.MiniMaxH3RefModMasterExtract):
+            inputs = node.INPUT_TYPES()["required"]
+            for key, value in (("latent_frames", 241), ("max_tokens", 262144)):
+                kind, options = inputs[key]
+                self.assertEqual(kind, "INT")
+                self.assertGreaterEqual(options["max"], value)
+            self.assertEqual(inputs["latent_frames"][1]["default"], 16)
+
+    def test_motion_preset_preserves_requested_temporal_limit(self):
+        latent = torch.randn(1, 24, 33, 16, 16)
+        vae = types.SimpleNamespace(encode=lambda source: latent)
+        result = N.MiniMaxH3RefModExtract.execute(
+            "motion", mode="training", extraction_preset="motion_sequence",
+            refs_video={"ref_video_0": torch.zeros(129, 64, 64, 3)},
+            vae=vae, latent_frames=33, identity=0, max_tokens=0, save=False)
+        self.assertEqual(result[0][0][0].latent.shape[2], 33)
+
     def test_master_visual_only_preserves_extractor_controls(self):
         mod = N.H3RefMod(name="hero_visual", kind="image", latent=torch.ones(1,24,1,4,4))
         with patch.object(N.MiniMaxH3RefModExtract, "execute", return_value=N.io.NodeOutput([(mod,1)])) as visual, \

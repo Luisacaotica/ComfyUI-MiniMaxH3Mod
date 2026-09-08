@@ -1585,9 +1585,12 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "full-mode parity for identity."),
                 io.Int.Input("pool_w", default=16, min=2, max=64, step=2,
                     tooltip="Pooled mode: grid width (long edge if the source is wider than tall)."),
-                io.Int.Input("latent_frames", default=16, min=1, max=16,
-                    tooltip="Frames kept per video ref: training mode pools them, encode mode uniformly "
-                            "samples them (16x16x16 = 4096 tokens per video ref). Images always use 1."),
+                io.Int.Input("latent_frames", default=16, min=1, max=2147483647,
+                    tooltip="Per-video temporal limit. Encode mode samples up to this many source frames "
+                            "before VAE encoding and causal 4k+1 trimming; training mode pools to "
+                            "up to this many latent frames after encoding. Set at least the source "
+                            "frame count to avoid encode-mode sampling. Images use 1. Higher values "
+                            "increase memory and token cost; max_tokens can still reduce the result."),
                 io.Int.Input("identity", default=500, min=0, max=2000, step=50,
                     tooltip="Pooled mode only: how tightly the mod clings to the reference "
                             "(gradient refinement steps). Higher = more identity detail but sticks "
@@ -1622,7 +1625,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "video/GIF (few tokens) isn't drowned out by the main video's tokens. "
                             "Each repeat duplicates the same latent frames, so attention weight on "
                             "the ref scales roughly with N. 1 = no repeat; file size grows with N."),
-                io.Int.Input("max_tokens", default=5120, min=0, max=65536, step=512,
+                io.Int.Input("max_tokens", default=5120, min=0, max=2147483647, step=512,
                     tooltip="Hard cap on the total tokens the mod injects (0 = no cap; 5120 is a good "
                             "performance default). If the stacked refs exceed it, near-duplicate "
                             "latent frames are dropped first (video refs are full of frames that "
@@ -1660,7 +1663,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         elif extraction_preset == "style_experimental":
             mode, pool_h, pool_w, identity, merge, motion_only = "training", 8, 8, 150, False, False
         elif extraction_preset == "motion_sequence":
-            mode, pool_h, pool_w, latent_frames, merge, motion_only = "training", 16, 16, 16, False, False
+            mode, pool_h, pool_w, merge, motion_only = "training", 16, 16, False, False
         elif extraction_preset != "manual":
             raise ValueError("Unknown extraction preset.")
         mode = normalize_mode(mode)  # accept legacy 'full'/'pooled'
@@ -2021,7 +2024,7 @@ class MiniMaxH3RefModAudioExtract:
             "audio": ("AUDIO",), "audio_vae": ("VAE",),
             "name": ("STRING", {"default": "audio_refmod"}),
             "max_seconds": ("FLOAT", {"default": 30.0, "min": 0.025, "max": 600.0}),
-            "max_tokens": ("INT", {"default": 5120, "min": 0, "max": 65536}),
+            "max_tokens": ("INT", {"default": 5120, "min": 0, "max": 2147483647}),
             "budget_policy": (["error", "truncate"],),
             "concept_type": (["voice", "singing", "music_style", "sound_fx", "ambience"],),
             "description": ("STRING", {"default": "", "multiline": True}),
@@ -2104,7 +2107,7 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
             io.Vae.Input("audio_vae", optional=True,
                          tooltip="MiniMax H3 audio VAE. The visual vae socket remains separate."),
             io.Float.Input("audio_max_seconds", default=30.0, min=0.025, max=600.0),
-            io.Int.Input("audio_max_tokens", default=5120, min=0, max=65536),
+            io.Int.Input("audio_max_tokens", default=5120, min=0, max=2147483647),
             io.Combo.Input("audio_budget_policy", options=["error", "truncate"], default="error"),
             io.Combo.Input("audio_concept_type", options=["voice", "singing", "music_style", "sound_fx", "ambience"], default="voice"),
             io.Int.Input("max_total_tokens", default=0, min=0, max=1048576,

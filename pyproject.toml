@@ -1,0 +1,17 @@
+[project]
+name = "ComfyUI-MiniMaxH3Mod"
+description = "Extract, save and combine reusable MiniMax H3 image, video and audio references as RefMod safetensors, with a unified Master extractor, library, inspector and strength curves."
+version = "0.2.0"
+license = { file = "LICENSE" }
+readme = "README.md"
+dependencies = ["torch", "safetensors", "numpy", "Pillow"]
+
+[project.urls]
+Repository = "https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod"
+Documentation = "https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod#readme"
+"Bug Tracker" = "https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod/issues"
+
+[tool.comfy]
+# Fill with the exact publisher ID from your Comfy Registry profile before publishing.
+PublisherId = "luisacaotica"
+DisplayName = "MiniMax H3 RefMod"

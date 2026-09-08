@@ -7,6 +7,11 @@
 
 ## What's new — v0.2.0
 
+Updates on `main` since v0.2.0: extraction widgets accept token budgets above
+65,536 and frame limits above 16, including Master. The `motion_sequence`
+preset now respects the requested frame limit. Counts remain integers;
+defaults are unchanged.
+
 - **RefMod Master** — extract image/video and audio references in one node,
   with separate VAE inputs, one output bundle and a combined token budget.
 - **Integrated audio** — create and load audio RefMods directly in this pack;
@@ -551,6 +556,15 @@ contributions sequentially. This reduces repeated work; it does not change the
 objective into DreamBooth, Textual Inversion or control/target edit training.
 
 ### Motion-only extraction (experimental)
+
+For longer video references, increase `latent_frames` and the token budget
+together. In `encode`, `latent_frames` limits sampled **source frames** before
+the VAE's causal 4k+1 trimming and temporal compression; set it at least to
+the source frame count to avoid that sampling. In `training`, it limits the
+**latent frames** retained after encoding. It is not a duration in seconds.
+`max_tokens=0` disables the extraction token cap; loader/Apply/bridge budgets
+are separate. Higher values increase memory and attention cost and do not
+guarantee faithful motion transfer.
 
 `motion_only` in training mode encodes normalized absolute frame differences,
 `abs(frame[t+1] - frame[t])`. These highlight change, including camera motion,
