@@ -27,7 +27,7 @@ class ReferenceIntegrationTests(unittest.TestCase):
             mod.save(path)
             loaded = core.H3CharacterMod.load(path)
             self.assertTrue(torch.equal(before, loaded.references[0].vision_pixels()))
-            self.assertEqual(core.read_character_metadata(path)["format_version"], 2)
+            self.assertEqual(core.read_character_metadata(path)["format_version"], core.FORMAT_VERSION)
             # Actual v1 header and byte frames, rather than merely defaulting a version.
             old = character()
             old.save(path, overwrite=True)
@@ -35,6 +35,10 @@ class ReferenceIntegrationTests(unittest.TestCase):
                 tensors = {key: handle.get_tensor(key).clone() for key in handle.keys()}
                 metadata = dict(handle.metadata())
             header = json.loads(metadata[core.META_KEY])
+            header["format_version"] = 2
+            metadata[core.META_KEY] = json.dumps(header)
+            save_file(tensors, str(path), metadata=metadata)
+            self.assertTrue(torch.equal(core.H3CharacterMod.load(path).references[0].frames, old.references[0].frames))
             header["format_version"] = 1
             metadata[core.META_KEY] = json.dumps(header)
             save_file(tensors, str(path), metadata=metadata)

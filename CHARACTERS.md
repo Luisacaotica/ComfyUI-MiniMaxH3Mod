@@ -1,6 +1,6 @@
 # Character RefMods: appearance and voice
 
-**For the simpler v0.3.1 workflow, use [NATIVE_REFMODS.md](NATIVE_REFMODS.md).**
+**For the simpler v0.3.2 workflow, use [NATIVE_REFMODS.md](NATIVE_REFMODS.md).**
 It saves and loads combined appearance/voice files through the original RefMod
 nodes and ComfyUI's official Reference to Video node. Your existing character
 files work there. The separate character nodes documented below remain for
@@ -169,8 +169,9 @@ video/audio pair.
 
 These older character nodes check a combined budget of **nine images, three
 videos and three audio-bearing references**. The previous 15-second aggregate
-check has been removed: it was a local validation policy, not a demonstrated
-H3 architecture limit. Exceeding a count or configured token budget gives an
+check has been removed from these local experiments. MiniMax does document
+three audio clips and 15 seconds total; accepting more is experimental, not a
+proven expansion of supported inputs or speaker capacity. Exceeding a count or configured token budget gives an
 error instead of dropping another character's data. `max_reference_tokens = 0`
 disables the additional user token cap. The simplified native workflow has
 explicit per-character recording selection; see [NATIVE_REFMODS.md](NATIVE_REFMODS.md).

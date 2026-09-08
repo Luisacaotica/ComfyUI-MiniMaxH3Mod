@@ -6,6 +6,7 @@ No shared tokenizer, encoder weights, node classes or ComfyUI files are patched.
 """
 import hashlib
 import json
+import re
 
 from .refmod_profile import ProfileRefMod
 from .character_references import tensor_digest
@@ -27,33 +28,81 @@ def bundle_signature(mods):
                          **{k: tensor_digest(getattr(ref, k)) for k in
                             ("visual", "audio", "frames", "timestamps")}})
         rows.append({"id": mod.profile.character_id, "name": mod.name,
+                     "subject_slot": mod.subject_slot,
                      "strength": strength, "voice": mod.voice_reference, "refs": refs})
     return hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def reference_map(mods):
+def reference_assignments(mods):
     counts = {"image": 0, "video": 0, "audio": 0}
     tag = {"image": "Picture", "video": "Video", "audio": "Audio"}
     profiles = profiles_in(mods)
     labels = [[] for _ in profiles]
+    pairs = [[] for _ in profiles]
     for owner, mod, ref in ordered_profile_refs(mods):
+        current = []
         for item in presentation_for(ref):
             kind = item["type"]
             counts[kind] += 1
-            labels[owner].append(f"<{tag[kind]} {counts[kind]}>")
-    return "\n".join(f"{mod.name}: {', '.join(labels[i])}. {mod.report()}"
-                     for i, (mod, _) in enumerate(profiles))
+            label = f"<{tag[kind]} {counts[kind]}>"
+            labels[owner].append(label)
+            current.append(label)
+        if ref.kind == "video_audio":
+            pairs[owner].append(tuple(current))
+    assignments = {}
+    for i, (mod, _) in enumerate(profiles):
+        slot = mod.subject_slot or i + 1
+        entry = assignments.setdefault(slot, {"slot": slot, "name": mod.name,
+            "id": mod.profile.character_id, "visual": [], "audio": [], "paired": []})
+        if entry["id"] != mod.profile.character_id:
+            raise ValueError(f"Two different characters claim <Subject {slot}>. Use one RefMod loader.")
+        for label in labels[i]:
+            entry["audio" if label.startswith("<Audio") else "visual"].append(label)
+        entry["paired"].extend(pairs[i])
+    return list(assignments.values())
+
+
+def reference_map(mods):
+    return "\n".join(f"mod_{r['slot']} -> <Subject {r['slot']}>: {r['name']}: "
+                     + ", ".join(r["visual"] + r["audio"])
+                     for r in reference_assignments(mods))
+
+
+def resolve_subject_prompt(text, mods):
+    """Add native associations internally; never alter the user's dialogue or S IDs.
+
+    Slot numbers are stable even with empty/disabled slots and repeated copies.
+    The UI prompt remains untouched. The resolved text is recorded for inspection.
+    This is reference conditioning, not a learned identity or an attention mask.
+    """
+    rows = []
+    for entry in reference_assignments(mods):
+        subject = f"<Subject {entry['slot']}>"
+        rows.append(f"{subject} uses the appearance references {', '.join(entry['visual'])}. "
+                    "Preserve that character's individual face, eyes, hair, clothing and body proportions.")
+        rows.append(f"{', '.join(entry['audio'])} provide the voice-timbre references exclusively for {subject}. "
+                    "Generate this subject's requested new words and emotions using that voice identity; "
+                    "do not replay the reference recording or transfer its voice to another subject.")
+        for audio, video in entry["paired"]:
+            rows.append(f"{audio} is the synchronized soundtrack of {video}; "
+                        f"they show and record the same speaking character, {subject}.")
+    definitions = "\n".join(rows)
+    heading = re.search(r"(?im)^[ \t]*subject_definitions[ \t]*:[ \t]*", text)
+    if heading:
+        # Insert within the existing section without parsing/rebuilding the scene.
+        return text[:heading.end()] + "\n" + definitions + "\n" + text[heading.end():]
+    return "subject_definitions:\n" + definitions + "\n\n" + text
 
 
 def ordered_profile_refs(mods):
     refs = [(i, mod, ref) for i, (mod, _) in enumerate(profiles_in(mods)) for ref in mod.selected_references()]
-    order = {"image": 0, "video": 1, "video_audio": 1, "audio": 2}
+    order = {"image": 0, "refmod_visual": 0, "video": 1, "video_audio": 1, "audio": 2}
     return sorted(refs, key=lambda row: order[row[2].kind])
 
 
 def presentation_for(ref):
     items = [{"type": "audio"}] if ref.audio is not None else []
-    if ref.kind == "image":
+    if ref.kind in ("image", "refmod_visual"):
         items.append({"type": "image", "data": ref.vision_pixels()})
     elif ref.kind in ("video", "video_audio"):
         items.append({"type": "video", "data": ref.vision_pixels(), "timestamps": ref.timestamps.tolist()})
@@ -87,12 +136,15 @@ class RefModCLIP:
         # same order for reference latents; native references follow them.
         items = [item for _, _, ref in ordered_profile_refs(self.mods) for item in presentation_for(ref)]
         native_items = list(kwargs.pop("minimax_ref_items") or [])
-        tokens = self.base.tokenize(text, return_word_ids=return_word_ids,
+        resolved = resolve_subject_prompt(text, self.mods)
+        tokens = self.base.tokenize(resolved, return_word_ids=return_word_ids,
                                    minimax_ref_items=items + native_items, **kwargs)
         if not isinstance(tokens, dict):
             raise ValueError("Expected the MiniMax H3 text encoder's token dictionary.")
         return RefModTokens(tokens, {"signature": self.signature,
-                                    "reference_map": reference_map(self.mods)})
+                                    "reference_map": reference_map(self.mods),
+                                    "user_prompt": text, "resolved_prompt": resolved,
+                                    "assignments": reference_assignments(self.mods)})
 
     def encode_from_tokens_scheduled(self, tokens, *args, **kwargs):
         if not isinstance(tokens, RefModTokens) or tokens.manifest["signature"] != self.signature:

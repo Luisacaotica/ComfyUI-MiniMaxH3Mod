@@ -26,7 +26,7 @@
         ]
       },
       "widgets_values": [
-        "Select combined profiles in Load H3 RefMods; files from our earlier character extractor work too. Select your H3 checkpoint, minimax text encoder and decode VAEs. Keep copies=1 and scramble_seed=-1. The official node contains your complete Ref2VA prompt. The sample assumes 3 images per character; use the loader's reference map to adjust Picture/Video/Audio labels to YOUR files. voice_reference_N=1 selects the first recording in slot N; 2 selects the second; 0 explicitly uses all. Do not upload the same cached character refs again to the official node. Binding experiments are not required."
+        "Select combined profiles in Load H3 RefMods; files from our earlier character extractor work too. Select your H3 checkpoint, minimax text encoder and decode VAEs. Keep copies=1 and scramble_seed=-1. The official node contains your complete Ref2VA prompt. mod_1 supplies Subject 1, mod_2 supplies Subject 2, etc. Write Subject tags and dialogue normally; visual/voice reference associations are inserted internally. voice_reference_N=1 selects the first recording in slot N; 2 selects the second; 0 explicitly uses all. Do not upload the same cached character refs again to the official node. Binding experiments are not required."
       ]
     },
     {
@@ -244,7 +244,7 @@
         ]
       },
       "widgets_values": [
-        "subject_definitions:\n<Subject 1> is character A, shown in <Picture 1>, <Picture 2>, <Picture 3>.\n<Audio 1> is the voice-timbre reference for <Subject 1> (S1).\n<Subject 2> is character B, shown in <Picture 4>, <Picture 5>, <Picture 6>.\n<Audio 2> is the voice-timbre reference for <Subject 2> (S2).\n<Subject 3> is character C, shown in <Picture 7>, <Picture 8>, <Picture 9>.\n<Audio 3> is the voice-timbre reference for <Subject 3> (S3).\n\nsummary:\n[reference generation + audio reference] The characters discuss their journey.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - retain the referenced appearance.\n<Audio 1>: reference - use the voice timbre for the new dialogue.\n<Subject 2> (appears in [Shot 1]): fully_preserved - retain the referenced appearance.\n<Audio 2>: reference - use the voice timbre for the new dialogue.\n<Subject 3> (appears in [Shot 1]): fully_preserved - retain the referenced appearance.\n<Audio 3>: reference - use the voice timbre for the new dialogue.\n\ndetailed_description:\n[Shot 1] A stationary eye-level medium shot shows the characters in a quiet room lit by soft daylight. Each character's face is clearly visible. They speak one at a time in the order below, with natural expressions and lip movements.\n<Subject 1> (S1) speaks with calm, natural delivery: <d>[English] The old bridge is still standing.</d>, then closes their mouth while listening to the next speaker.\n<Subject 2> (S2) speaks with calm, natural delivery: <d>[English] Then we can cross before sunset.</d>, then closes their mouth while listening to the next speaker.\n<Subject 3> (S3) speaks with calm, natural delivery: <d>[English] I will bring the lantern.</d>, then closes their mouth while listening to the next speaker.\n\noverall_soundscape:\nQuiet room ambience beneath the voices.\n\nnon_diegetic_music:\nN/A",
+        "subject_definitions:\n<Subject 1> is character A.\n<Subject 2> is character B.\n<Subject 3> is character C.\n\nsummary:\n[reference generation + audio reference] The characters discuss their journey.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - retain this character's appearance and voice identity.\n<Subject 2> (appears in [Shot 1]): fully_preserved - retain this character's appearance and voice identity.\n<Subject 3> (appears in [Shot 1]): fully_preserved - retain this character's appearance and voice identity.\n\ndetailed_description:\n[Shot 1] A stationary eye-level medium shot shows the characters in a quiet room lit by soft daylight. Each character's face is clearly visible. They speak one at a time in the order below, with natural expressions and lip movements.\n<Subject 1> (S1) speaks with calm, natural delivery: <d>[English] The old bridge is still standing.</d>, then closes their mouth while listening to the next speaker.\n<Subject 2> (S2) speaks with calm, natural delivery: <d>[English] Then we can cross before sunset.</d>, then closes their mouth while listening to the next speaker.\n<Subject 3> (S3) speaks with calm, natural delivery: <d>[English] I will bring the lantern.</d>, then closes their mouth while listening to the next speaker.\n\noverall_soundscape:\nQuiet room ambience beneath the voices.\n\nnon_diegetic_music:\nN/A",
         768,
         512,
         362,
@@ -919,7 +919,7 @@
           "slot_index": 0
         }
       ],
-      "title": "Reference labels for your prompt",
+      "title": "Automatic character assignments (diagnostic)",
       "properties": {
         "Node name for S&R": "PreviewAny",
         "test_widget_names": []

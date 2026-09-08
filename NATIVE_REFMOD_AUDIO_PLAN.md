@@ -1,74 +1,56 @@
-# RefMod audio with the official ComfyUI workflow
+# RefMod audio integration plan — v0.3.2
 
-Implemented locally as v0.3.1. CPU regression and integration checks passed
-on 2026-09-08; see [validation details](NATIVE_REFMOD_VALIDATION.md).
-The next validation step is rendering with the user's H3 checkpoint and profiles.
+## Contract
 
-## User-facing contract
+Keep the author's visual extraction and ordinary Subject-based prompting.
+Extend the existing Extract H3 RefMod, Load H3 RefMods and Apply H3 RefMod.
+Use the unchanged official MiniMax H3 Reference to Video node. No new required
+node types, dialogue fields, manual Picture/Audio mapping or model weight edits.
 
-Extend Extract H3 RefMod, Load H3 RefMods and Apply H3 RefMod. Keep the
-unmodified official MiniMax H3 Reference to Video node and its full Ref2VA
-prompt. Do not require the experimental character dialogue or binding nodes.
+## Implemented design
 
-Extraction saves one file containing visual references, voice recordings,
-presentation images and genuine video/audio timing. Visual-only legacy
-extraction keeps its current behavior. Existing character files remain usable.
+1. Call the original extractor with the same ordered visual sources and visual
+   settings. Save its resulting latent unchanged in the combined character file.
+   Reuse the original visual strength/curve operation during Apply. Audio inputs
+   are encoded separately and do not participate in visual refinement.
+2. Keep multiple encoded voice examples in that same safetensor. Select one per
+   character by default; selecting another or all never deletes recordings.
+3. For a speaking file, decode a matched interval. Store both the original
+   sampled/compressed identity stack and a separate native video_audio performance
+   with a real shared timeline. This requires extra visual encoding and tokens;
+   a pooled identity stack is never falsely treated as lip-synchronized video.
+4. Map runtime loader slot N to Subject N. Preserve gaps, disabled slots, copies
+   and the user's S speaker IDs. Add native appearance/voice associations inside
+   subject_definitions before the official text encode; leave the visible prompt,
+   scene description and dialogue intact. Store original/resolved text in metadata.
+5. Supply saved reference presentation through a scoped CLIP clone, then inject
+   matching blocks through Apply. Validate the bundle signature, including slot
+   numbers and selected recordings. Reject duplicate Apply, post-encode scrambling
+   and operations that remove already-numbered references.
+6. Keep all eight loader slots usable for experiments. Test eight voice blocks
+   and three synchronized soundtracks plus three standalone voices. This is not
+   a claim of eight-speaker checkpoint quality. MiniMax's documented audio input
+   specification remains three clips and 15 seconds total; local packing permits
+   experiments beyond those specifications.
+7. Read earlier character tables (versions 1 and 2), while version 3 adds original
+   visual stacks. Old files gain automatic mapping without modification; only
+   new extraction restores the original visual pipeline. Keep legacy visual-only
+   RefMods and node IDs working.
 
-Generation wiring:
+## Wiring
 
-    CLIP Loader -> Load H3 RefMods.clip -> official Reference to Video.clip
-    Load H3 RefMods.mods -> Apply H3 RefMod.mods
-    official Reference to Video.positive -> Apply H3 RefMod.conditioning -> guider
-    official Reference to Video.latent -> sampler
+```text
+CLIP Loader -> Load H3 RefMods.clip -> official Reference to Video.clip
+Load H3 RefMods.mods -> Apply H3 RefMod.mods
+Official positive -> Apply H3 RefMod.conditioning -> guider
+Official AV latent -> sampler
+```
 
-The complete user prompt stays in the official node. The loader's CLIP output
-is a local adapter around a cloned encoder: it adds cached reference presentation
-to tokenization and records the exact source bundle in conditioning metadata.
-Apply checks that metadata, then attaches the matching saved latents. No core
-ComfyUI edits, node replacement, global tokenizer patches or second text encode.
+## Validation and boundary
 
-## Changes
-
-1. Extend the RefMod reader/writer to recognize combined profiles and earlier
-   h3_character_meta files, including recursive discovery, cache accounting and
-   resaving all stored recordings even when only one is selected for generation.
-2. Extend the original extractor with optional audio/audio VAE, multiple audio
-   inputs and a speaking-video file input. Keep each reference separately;
-   preserve a matched time interval for paired clips. Compression, if used,
-   must not resample speech or destroy a paired video's temporal grid.
-3. Add a CLIP input/output to the existing loader, keeping existing output
-   indices. Select one voice recording per profile by default. Report stable
-   Picture/Video/Audio labels and the selected voice; all source recordings
-   remain in the file. Advanced selection can use another recording or all.
-4. Extend Apply to expand combined entries into native reference blocks. Check
-   encoder/bundle correspondence, avoid double application, and reject
-   post-encoding scrambling of combined references rather than silently
-   changing assignments. Preserve original behavior for ordinary RefMods.
-5. Replace the previous blanket 15-second aggregate rejection with explicit
-   selected-reference reporting and configurable token budgets. Distinguish
-   native UI slot counts from demonstrated model limits. More reference audio
-   is not an automatic quality improvement.
-6. Supply minimal extraction and one/two-character generation examples using
-   the official node. Keep old node IDs for saved workflow compatibility, but
-   direct users to the simpler workflow.
-
-## Acceptance checks
-
-- The original extractor saves one combined safetensors file, and the original
-  loader and Apply consume it. Legacy visual/audio files still work.
-- Earlier character files load without recreating profiles. Two profiles with
-  two recordings each select one voice each by default; their 18.10 seconds of
-  stored audio do not trigger the previous blanket error.
-- Official-node prompt text reaches its tokenizer unchanged. Cached and
-  equivalent native references have matching presentation and latent payloads.
-- Matched speaking-video timing survives storage and Apply. Independent images
-  and audio are never mislabeled as a synchronized performance.
-- The base CLIP and other branches are untouched. Wrong bundles, duplicate
-  Apply and incompatible scrambling fail before sampling.
-- All new examples validate against real ComfyUI node schemas. Regression
-  tests use real serialization and ComfyUI code; GPU render quality remains a
-  separate user test. The user's successful single-character render is the
-  baseline, not proof of multi-character voice locking.
-
-Reference: MiniMaxAI's VIDEO_PROMPT_WRITING_GUIDE_ref_en.md; the six sections,
-global speaker IDs and dialogue tags stay in the official prompt field.
+See NATIVE_REFMOD_VALIDATION.md for executable tests and results. Preserve
+numerical visual parity and source timing before testing generation quality.
+The implementation conveys associations through H3's learned reference mechanism;
+it does not train a speaker embedding or automatically enable attention biases.
+The next required evidence is a released-checkpoint render comparison of voice
+assignment, new dialogue, lip movement and visual likeness with fixed settings.

@@ -5,7 +5,7 @@
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
 
-## Appearance and voice in the original nodes — v0.3.1 (unreleased)
+## Appearance and voice in the original nodes — v0.3.2 (unreleased)
 
 **Extract H3 RefMod** can now save images and voice recordings, or a speaking
 video with its soundtrack, in **one safetensors file**. Use the original
@@ -14,10 +14,18 @@ video with its soundtrack, in **one safetensors file**. Use the original
 the official node; no separate character dialogue inputs are required.
 
 Start with [the native-node setup guide](NATIVE_REFMODS.md) and
-[five ready-to-open workflows](examples/native_refmods). The loader now has
+[six ready-to-open workflows](examples/native_refmods). The loader now has
 a CLIP input/output for cached reference presentation, selects one saved voice
-example per character by default, and prints the actual Picture/Video/Audio map.
+example per character by default, and automatically associates each loader slot
+with its Subject number. Write `<Subject 1>`, `<Subject 2>`, etc.; you do not
+need to map Picture/Audio labels yourself. The internal mapping is inspectable.
 Existing character safetensors load without re-extraction.
+
+New extraction calls the author's existing visual extractor and preserves its
+visual latent and strength/curve behavior. Audio is added alongside that data.
+A speaking video also stores a synchronized performance, which costs extra
+reference tokens. Eight-character routing is experimental, not verified voice
+accuracy or an expansion of MiniMax's documented support envelope.
 
 This branch includes upstream v0.2.0 at `7604ef4`. The previous
 [character/binding experiments](VOICE_TESTING.md) remain available for saved

@@ -26,7 +26,7 @@
         ]
       },
       "widgets_values": [
-        "Select combined profiles in Load H3 RefMods; files from our earlier character extractor work too. Select your H3 checkpoint, minimax text encoder and decode VAEs. Keep copies=1 and scramble_seed=-1. The official node contains your complete Ref2VA prompt. mod_1 supplies Subject 1, mod_2 supplies Subject 2, etc. Write Subject tags and dialogue normally; visual/voice reference associations are inserted internally. voice_reference_N=1 selects the first recording in slot N; 2 selects the second; 0 explicitly uses all. Do not upload the same cached character refs again to the official node. Binding experiments are not required."
+        "Select combined profiles in Load H3 RefMods; files from our earlier character extractor work too. Select your H3 checkpoint, minimax text encoder and decode VAEs. Keep copies=1 and scramble_seed=-1. The official node contains your complete Ref2VA prompt. mod_1 supplies Subject 1, mod_2 supplies Subject 2, etc. Write Subject tags and dialogue normally; visual/voice reference associations are inserted internally. voice_reference_N=1 selects the first recording in slot N; 2 selects the second; 0 explicitly uses all. Do not upload the same cached character refs again to the official node. Binding experiments are not required. Eight-character experimental capacity test: routing is CPU-tested; voice accuracy is not established. Start with one image and one short clean voice sample per character."
       ]
     },
     {
@@ -121,25 +121,25 @@
         "characters/character_a",
         1.0,
         1,
-        "(none)",
+        "characters/character_b",
         1.0,
         1,
-        "(none)",
+        "characters/character_c",
         1.0,
         1,
-        "(none)",
+        "characters/character_d",
         1.0,
         1,
-        "(none)",
+        "characters/character_e",
         1.0,
         1,
-        "(none)",
+        "characters/character_f",
         1.0,
         1,
-        "(none)",
+        "characters/character_g",
         1.0,
         1,
-        "(none)",
+        "characters/character_h",
         1.0,
         1,
         0,
@@ -244,10 +244,10 @@
         ]
       },
       "widgets_values": [
-        "subject_definitions:\n<Subject 1> is character A.\n\nsummary:\n[reference generation + audio reference] The characters discuss their journey.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - retain this character's appearance and voice identity.\n\ndetailed_description:\n[Shot 1] A stationary eye-level medium shot shows the characters in a quiet room lit by soft daylight. Each character's face is clearly visible. They speak one at a time in the order below, with natural expressions and lip movements.\n<Subject 1> (S1) speaks with calm, natural delivery: <d>[English] The old bridge is still standing.</d>, then closes their mouth while listening to the next speaker.\n\noverall_soundscape:\nQuiet room ambience beneath the voices.\n\nnon_diegetic_music:\nN/A",
+        "subject_definitions:\n<Subject 1> is character A.\n<Subject 2> is character B.\n<Subject 3> is character C.\n<Subject 4> is character D.\n<Subject 5> is character E.\n<Subject 6> is character F.\n<Subject 7> is character G.\n<Subject 8> is character H.\n\nsummary:\n[reference generation + audio reference] The characters discuss their journey.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - retain this character's appearance and voice identity.\n<Subject 2> (appears in [Shot 1]): fully_preserved - retain this character's appearance and voice identity.\n<Subject 3> (appears in [Shot 1]): fully_preserved - retain this character's appearance and voice identity.\n<Subject 4> (appears in [Shot 1]): fully_preserved - retain this character's appearance and voice identity.\n<Subject 5> (appears in [Shot 1]): fully_preserved - retain this character's appearance and voice identity.\n<Subject 6> (appears in [Shot 1]): fully_preserved - retain this character's appearance and voice identity.\n<Subject 7> (appears in [Shot 1]): fully_preserved - retain this character's appearance and voice identity.\n<Subject 8> (appears in [Shot 1]): fully_preserved - retain this character's appearance and voice identity.\n\ndetailed_description:\n[Shot 1] A stationary eye-level medium shot shows the characters in a quiet room lit by soft daylight. Each character's face is clearly visible. They speak one at a time in the order below, with natural expressions and lip movements.\nFrom 0.8 to 2.1 seconds, <Subject 1> (S1) speaks with calm, natural delivery: <d>[English] Ready.</d>, then closes their mouth while listening to the next speaker.\nFrom 2.4 to 3.7 seconds, <Subject 2> (S2) speaks with calm, natural delivery: <d>[English] Let's go.</d>, then closes their mouth while listening to the next speaker.\nFrom 4.0 to 5.3 seconds, <Subject 3> (S3) speaks with calm, natural delivery: <d>[English] Wait here.</d>, then closes their mouth while listening to the next speaker.\nFrom 5.6 to 6.9 seconds, <Subject 4> (S4) speaks with calm, natural delivery: <d>[English] I see it.</d>, then closes their mouth while listening to the next speaker.\nFrom 7.2 to 8.5 seconds, <Subject 5> (S5) speaks with calm, natural delivery: <d>[English] Stay close.</d>, then closes their mouth while listening to the next speaker.\nFrom 8.8 to 10.1 seconds, <Subject 6> (S6) speaks with calm, natural delivery: <d>[English] Over there.</d>, then closes their mouth while listening to the next speaker.\nFrom 10.4 to 11.7 seconds, <Subject 7> (S7) speaks with calm, natural delivery: <d>[English] Follow me.</d>, then closes their mouth while listening to the next speaker.\nFrom 12.0 to 13.3 seconds, <Subject 8> (S8) speaks with calm, natural delivery: <d>[English] All clear.</d>, then closes their mouth while listening to the next speaker.\n\noverall_soundscape:\nQuiet room ambience beneath the voices.\n\nnon_diegetic_music:\nN/A",
         768,
         512,
-        124,
+        362,
         "max"
       ]
     },
@@ -810,7 +810,7 @@
         ]
       },
       "widgets_values": [
-        "video/refmod_1_characters",
+        "video/refmod_8_characters",
         "auto",
         "auto"
       ]

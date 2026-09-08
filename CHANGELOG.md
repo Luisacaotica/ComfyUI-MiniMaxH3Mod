@@ -5,6 +5,28 @@ All notable changes are tracked here. Each version is also published as a
 so you can keep using an older version if a new one changes something you
 rely on.
 
+## v0.3.2 — automatic subject association and original visual extraction
+
+- Map loader slot N to Subject N internally, including empty/disabled slots,
+  repeated copies and eight-character casts. The visible prompt needs only
+  Subject tags; dialogue text, speaker IDs and scene instructions are preserved.
+  Record both user and internally resolved prompts in conditioning metadata.
+- Replace the separate combined visual extractor with a call to the original
+  extractor. Preserve its canvas/crop, mask, pooling, refinement, merge, repeat
+  and visual token-budget behavior, plus the exact visual strength calculation.
+- Keep the original identity stack and encoded audio together. Speaking files
+  additionally save a genuine synchronized performance instead of assigning
+  false soundtrack timing to a sampled/pooled identity stack.
+- Character table format 3 adds arbitrary original visual stacks; versions 1/2
+  remain readable. Existing files gain automatic Subject mapping on reload;
+  only new extractions use the restored original visual path.
+- Add tests for eight distinct voices, three soundtracks plus three independent
+  voices, original visual parity, slot gaps, copies and preserved dialogue.
+  Add an eight-character experimental workflow. No learned adapter or new
+  attention bias is enabled by this change; voice matching remains a render test.
+- Correct guidance: MiniMax documents three audio clips and 15 seconds total;
+  local packing can exceed these specifications but that is experimental.
+
 ## v0.3.1 — unreleased native RefMod workflow
 
 - Extend the original **Extract H3 RefMod** to save appearance and audio in one

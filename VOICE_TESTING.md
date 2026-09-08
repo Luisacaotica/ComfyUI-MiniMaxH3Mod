@@ -1,6 +1,6 @@
 # Test character voices with the upstream update
 
-**Recommended starting point: [the v0.3.1 native-node guide](NATIVE_REFMODS.md).**
+**Recommended starting point: [the v0.3.2 native-node guide](NATIVE_REFMODS.md).**
 It uses the original Extract/Load/Apply nodes and the official Reference to Video
 prompt field. The comparison and binding workflows below are older optional
 experiments; they are not required to use combined files.

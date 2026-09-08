@@ -778,7 +778,7 @@ class MiniMaxH3RefModsLoader:
                 continue
             mod = _load_mod(name)
             if isinstance(mod, ProfileRefMod):
-                mod = replace(mod, voice_reference=kwargs.get(f"voice_reference_{i}", 1))
+                mod = replace(mod, voice_reference=kwargs.get(f"voice_reference_{i}", 1), subject_slot=i)
                 print("[RefMod character] " + mod.report())
             rows.append((mod, min(1.0, max(0.0, strength)),
                          int(kwargs.get(f"copies_{i}", 1))))
@@ -1064,7 +1064,7 @@ class MiniMaxH3RefModApply(io.ComfyNode):
                 if native_profiles:
                     profile_blocks = [b for b in blocks if b.get("refmod_profile")]
                     order = {"image": 0, "video": 1, "video_audio": 1, "audio": 2}
-                    profile_blocks.sort(key=lambda b: order[b["kind"]])
+                    profile_blocks.sort(key=lambda b: 0 if b.get("refmod_original_visual") else order[b["kind"]])
                     legacy_blocks = [b for b in blocks if not b.get("refmod_profile")]
                     d["minimax_refs"] = profile_blocks + list(d.get("minimax_refs", [])) + legacy_blocks
                     d[APPLIED_KEY] = True
@@ -1770,15 +1770,15 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                     norm = _normalize_ref(src, label="folder reference")
                     ordered.append((norm, norm.shape[0] > 1))
         if audio is not None or any(v is not None for v in (refs_audio or {}).values()) or str(video_file).strip():
-            from .refmod_extract_audio import extract_profile
+            from .refmod_extract_audio import extract_with_original_visual
             ordered = [(_normalize_ref(src, label="character reference"), is_video) for src, is_video in ordered]
-            mod = extract_profile(name, ordered, vae, audio_vae, audio, refs_audio, video_file,
-                                  audio_start_seconds, audio_duration_seconds, ref_resolution,
-                                  mode, pool_h, pool_w, identity, description, merge, motion_only, multiplier, mask)
-            stored_tokens = sum(r.token_count for r in mod.profile.references)
-            if max_tokens and stored_tokens > max_tokens:
-                raise ValueError(f"Combined extraction has {stored_tokens:,} stored reference tokens; max_tokens={max_tokens}. "
-                                 "Use a lower reference resolution/shorter source interval, or raise max_tokens (0 disables the cap).")
+            mod = extract_with_original_visual(cls.execute, name, ordered, vae, audio_vae,
+                audio=audio, refs_audio=refs_audio, video_file=video_file,
+                audio_start_seconds=audio_start_seconds, audio_duration_seconds=audio_duration_seconds,
+                visual_options=dict(mode=mode, ref_resolution=ref_resolution, pool_h=pool_h, pool_w=pool_w,
+                    identity=identity, latent_frames=latent_frames, description=description, merge=merge,
+                    motion_only=motion_only, multiplier=multiplier, mask=mask,
+                    background_retention=background_retention, concept_type=concept_type, max_tokens=max_tokens))
             if save:
                 mod.path = mod_output_path(name, subfolder)
                 mod.save(mod.path)

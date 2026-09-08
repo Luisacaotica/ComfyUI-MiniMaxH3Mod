@@ -1,68 +1,71 @@
-# Native RefMod validation — 2026-09-08
+# Native RefMod validation — v0.3.2
 
 ## Environment
 
-- Extension: local v0.3.1 changes on `codex/character-voice-conditioning`.
-- Upstream RefMod baseline: `7604ef4690168365b9db35c13a69e4c99421ace4`.
-- ComfyUI: v0.34.0, `fbed745c8d7d62573b099cd61fe51cb64b9b807e`.
+- Date: 2026-09-08.
+- Branch: codex/character-voice-conditioning, local v0.3.2 changes.
+- Upstream RefMod baseline: 7604ef4690168365b9db35c13a69e4c99421ace4.
+- ComfyUI v0.34.0: fbed745c8d7d62573b099cd61fe51cb64b9b807e.
 - Windows, Python 3.13.9, PyTorch 2.14.0+cpu, PyAV 18.1.0.
-- No released H3 DiT, Qwen or VAE checkpoint was loaded for a quality render.
 
-## Results
+## Checks
 
-`python tools/run_tests.py /path/to/ComfyUI`: **93 tests passed**.
+Results: **98 regression tests passed**, **16 workflow schema/link checks
+passed**, all 20 node registrations imported, and `git diff --check` passed.
+All six native workflow layouts have non-overlapping saved node bounds and
+their generation prompts contain Subject tags without manual Picture/Audio tags.
 
-The new integration tests run the actual official `MiniMaxH3ReferenceToVideo`
-node and MiniMax tokenizer with ComfyUI's bundled Qwen vocabulary. Large VAE and
-text-model forwards use input-dependent codec doubles and synthetic text
-embeddings. Tests also run real safetensors serialization, video/audio demux,
-H3 packed layouts and the model wrapper's conditioning preparation.
+Run with ComfyUI's Python:
 
-Covered cases:
+```text
+python tools/run_tests.py /path/to/ComfyUI
+python tests/comfy_smoke.py /path/to/ComfyUI
+```
 
-- Original Extract saves images and multiple recordings in one file; the
-  original loader and Apply consume it. Resaving preserves every recording.
-- Earlier character files load without conversion. Two profiles with three
-  images and two recordings each retain all stored references but select one
-  recording each by default: six images, two voices, 8.10 seconds in the fixture.
-- Explicitly selecting all four fixture recordings packs 18.10 seconds without
-  the previous blanket aggregate-duration rejection.
-- Cached image/audio conditioning matches equivalent direct native reference
-  tokens, latent blocks and empty AV output; the full prompt is unchanged.
-- A real generated test video is demuxed through the original Extract node.
-  Its saved video and soundtrack share the same H3-aligned interval.
-- A compressed speaking-video reference preserves temporal geometry and its
-  paired soundtrack. Spatial pooling does not resample the voice latent.
-- Independent CLIP branches remain untouched. Additional ordinary references
-  follow cached references in consistent presentation/block order.
-- Wrong bundles, changed voice choices, duplicate Apply, scrambling, removing
-  already-numbered profiles with zero retention and unsupported Continuum
-  injection fail before sampling.
-- Copies, strengths and selected-reference token budgets work without changing
-  stored tensors. Ten saved recordings do not become ten render inputs by default.
+The regression suite covers:
 
-`python tests/comfy_smoke.py /path/to/ComfyUI`: **passed**.
+- Original visual extraction versus extraction with audio: exact tensor/dtype
+  equality for encode, mixed image sizes, repeat, token budget, pooling,
+  refinement, merge, masking and motion-only inputs. Visual strength/curve
+  outputs match the author's path, including after a safetensors round trip.
+- One saved file retaining the original identity stack and all voice examples.
+  Selected generation recordings do not remove unselected stored examples.
+- Automatic slot-to-Subject assignment, sparse slots, copies, disabled slots,
+  differing subject/speaker order, unchanged dialogue, wrong-bundle rejection,
+  duplicate Apply and no mutation of the source CLIP.
+- Earlier character files and native presentation parity with the same internally
+  resolved prompt. Character table versions 1 and 2 remain readable.
+- Real PyAV video demux with synchronized soundtrack. The author's pooled
+  identity and full timed performance coexist without sharing a false clock.
+- Eight distinct five-second voice references: 3,200 audio-reference tokens,
+  eight separate owner labels, unchanged individual audio tensors, real H3
+  PackedLayout and model-wrapper conditioning preparation.
+- Three video_audio references plus three independent audio references: six
+  reference voices with the correct internal Subject/Audio associations.
+- Actual H3 transformer forward with eight reference voices, using a tiny model
+  with random weights and small test tensors. Both output streams have the
+  expected shape and finite values. This checks execution, not voice quality.
+- Legacy RefMod nodes, metadata, caches, audio and previous binding experiments.
 
-- All 15 character/native workflow JSONs match node schemas and graph links;
-  the five new native workflows also match current widget ordering.
-- All 20 existing/new node registrations import.
-- Earlier native parity and experimental two-/three-character tiny-transformer
-  regressions pass. These tiny random-weight forwards validate integration,
-  not voice identity or generation quality.
+The smoke check validates all 16 workflow JSONs against actual node schemas and
+links, including widget order for the six native examples. It also runs the
+previous tiny two-/three-character attention regressions and all 20 node imports.
 
-`git diff --check`: **passed**. The five new workflow layouts have no overlapping
-saved node bounds, including title spacing. Their frontend appearance has not
-been inspected in a live ComfyUI browser session.
+## Limits of these checks
 
-## Remaining render validation
+The tokenizer vocabulary, node code, serialization, media decoding and H3 layout
+are real. Large visual/audio VAE and Qwen forwards use CPU test doubles. The
+small transformer has random weights. No released H3 checkpoint was used for a
+render. Workflow node geometry is checked locally; the frontend has not been
+inspected in a live ComfyUI session.
 
-Load the same profiles and new dialogue used for the user's successful
-single-character test in the new native workflow. Then load two and three
-profiles, using `voice_reference_N=1`, `copies=1`, `retention=1` and
-`scramble_seed=-1`. Update the prompt's Picture/Video/Audio references from the
-loader's printed map. Compare voice assignment, new-word accuracy, lip movement
-and appearance across fixed seeds.
+MiniMax documents three audio clips and 15 seconds total audio. The implementation
+allows larger local experiments; successful packing/forward execution does not
+establish reliable eight-speaker generation. The earlier description of that
+15-second number as merely an invented local policy was incorrect.
 
-Correct storage and reference presentation do not establish a measured reduction
-in voice swapping. That remains a checkpoint-level render test on the user's
-ComfyUI machine. These local results do not claim a hard speaker-identity lock.
+Start rendering with two profiles, one clean recording per profile, copies=1,
+retention=1 and scramble_seed=-1. Use only Subject labels in the visible prompt.
+Then compare three and eight profiles while recording voice assignment, dialogue
+accuracy, lip movement and appearance. Original latent equality does not imply
+identical generated visuals after adding voice references and new conditioning.

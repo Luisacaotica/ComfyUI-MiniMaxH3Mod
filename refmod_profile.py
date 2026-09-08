@@ -12,6 +12,7 @@ from .character_core import H3CharacterMod
 class ProfileRefMod(H3RefMod):
     profile: H3CharacterMod | None = None
     voice_reference: int = 1  # 1-based; 0 explicitly selects all stored voices.
+    subject_slot: int = 0  # Runtime loader slot; never persisted as character identity.
 
     def __post_init__(self):
         if self.profile is None:
@@ -22,10 +23,13 @@ class ProfileRefMod(H3RefMod):
     @classmethod
     def from_profile(cls, profile, path="", config=None):
         visual = next(r.visual for r in profile.references if r.visual is not None)
+        meta = profile.provenance.get("visual_metadata", {})
         return cls(name=profile.name, kind="character", latent=visual,
                    latent_t=visual.shape[2], latent_h=visual.shape[3], latent_w=visual.shape[4],
-                   mode="encode", source="character", description=profile.description,
-                   concept_type="identity", profile=profile, path=path, config=config or {})
+                   mode=meta.get("mode", "encode"), source=meta.get("source", "character"),
+                   pool=meta.get("pool", ""), optimize_steps=meta.get("optimize_steps", 0),
+                   description=profile.description, concept_type=meta.get("concept_type", "identity"),
+                   profile=profile, path=path, config=config or {})
 
     @classmethod
     def load_profile(cls, path, meta):
@@ -75,6 +79,24 @@ class ProfileRefMod(H3RefMod):
         blocks = []
         for ref in self.selected_references():
             block = ref.block()
+            if ref.kind == "refmod_visual":
+                # Use exactly the author's strength/curve operation on the
+                # original visual latent, including its single-frame rule.
+                original = H3RefMod(self.name, block["kind"], ref.visual.clone(),
+                    latent_t=ref.visual.shape[2], latent_h=ref.visual.shape[3], latent_w=ref.visual.shape[4])
+                used_curve, visual_strength = curve, strength
+                if (original.latent_t <= 1 and isinstance(curve, tuple) and len(curve) == 3
+                        and isinstance(curve[0], str) and curve[0] != "constant"):
+                    visual_strength = min(strength, max(0., min(1., float(curve[2]))))
+                    used_curve = None
+                if visual_strength <= 0:
+                    raise ValueError("This curve removes a numbered character visual. Use a positive curve_value, "
+                                     "or disable the character at its loader slot before text encoding.")
+                block = original.ref_block(visual_strength, used_curve)
+                block.update(refmod=True, refmod_profile=True, refmod_original_visual=True,
+                             character_id=self.profile.character_id, refmod_subject=self.subject_slot)
+                blocks.append(block)
+                continue
             for key in ("latent", "audio_latent"):
                 z = block.get(key)
                 if z is None:
@@ -87,7 +109,8 @@ class ProfileRefMod(H3RefMod):
                 if torch.any(weights < 1):
                     weights = weights.view((1, 1, t, 1, 1) if key == "latent" else (1, 1, 1, t))
                     block[key] = weights * z + (1 - weights) * _blur_latent(z)
-            block.update(refmod=True, refmod_profile=True, character_id=self.profile.character_id)
+            block.update(refmod=True, refmod_profile=True, character_id=self.profile.character_id,
+                         refmod_subject=self.subject_slot)
             blocks.append(block)
         return blocks
 

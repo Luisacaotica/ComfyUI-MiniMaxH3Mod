@@ -99,13 +99,12 @@ def generation(count):
     by_id[2].clear(); by_id[2].update(replacement)
     definitions, retention, actions = [], [], []
     for i in range(1, count + 1):
-        pics = ", ".join(f"<Picture {j}>" for j in range(3 * i - 2, 3 * i + 1))
-        definitions.extend([f"<Subject {i}> is character {chr(64+i)}, shown in {pics}.",
-                            f"<Audio {i}> is the voice-timbre reference for <Subject {i}> (S{i})."])
-        retention.extend([f"<Subject {i}> (appears in [Shot 1]): fully_preserved - retain the referenced appearance.",
-                          f"<Audio {i}>: reference - use the voice timbre for the new dialogue."])
-        line = ["The old bridge is still standing.", "Then we can cross before sunset.", "I will bring the lantern."][i-1]
-        actions.append(f"<Subject {i}> (S{i}) speaks with calm, natural delivery: <d>[English] {line}</d>, "
+        definitions.append(f"<Subject {i}> is character {chr(64+i)}.")
+        retention.append(f"<Subject {i}> (appears in [Shot 1]): fully_preserved - retain this character's appearance and voice identity.")
+        line = (["Ready.", "Let's go.", "Wait here.", "I see it.", "Stay close.", "Over there.", "Follow me.", "All clear."][i-1]
+                if count == 8 else ["The old bridge is still standing.", "Then we can cross before sunset.", "I will bring the lantern."][i-1])
+        timing = f"From {0.8 + (i-1)*1.6:.1f} to {2.1 + (i-1)*1.6:.1f} seconds, " if count == 8 else ""
+        actions.append(timing + f"<Subject {i}> (S{i}) speaks with calm, natural delivery: <d>[English] {line}</d>, "
                        "then closes their mouth while listening to the next speaker.")
     prompt = ("subject_definitions:\n" + "\n".join(definitions) +
               "\n\nsummary:\n[reference generation + audio reference] The characters discuss their journey.\n\n"
@@ -115,7 +114,7 @@ def generation(count):
               "one at a time in the order below, with natural expressions and lip movements.\n" + "\n".join(actions) +
               "\n\noverall_soundscape:\nQuiet room ambience beneath the voices.\n\nnon_diegetic_music:\nN/A")
     replacement = node(4, "MiniMaxH3ReferenceToVideo", "MiniMax H3 Reference to Video — YOUR FULL PROMPT", 1050, 30,
-        {"prompt": prompt, "width": 768, "height": 512, "length": {1:124, 2:243, 3:362}[count], "ref_image_size": "max"},
+        {"prompt": prompt, "width": 768, "height": 512, "length": {1:124, 2:243, 3:362, 8:362}[count], "ref_image_size": "max"},
         [("positive", "CONDITIONING", []), ("latent", "LATENT", [])], [port("clip", "CLIP")])
     replacement["size"] = [650, 850]
     by_id[4].clear(); by_id[4].update(replacement)
@@ -128,7 +127,7 @@ def generation(count):
         [port("conditioning", "CONDITIONING"), port("mods", "H3_REF_MODS")])
     graph["nodes"].append(apply)
     apply["size"] = [430, 440]
-    graph["nodes"].append(node(19, "PreviewAny", "Reference labels for your prompt", 450, 1210, {},
+    graph["nodes"].append(node(19, "PreviewAny", "Automatic character assignments (diagnostic)", 450, 1210, {},
                                [("STRING", "STRING", [])], [port("source", "STRING")]))
     connect(graph, 3, 0, 2, "clip")
     connect(graph, 2, 2, 4, "clip")
@@ -140,10 +139,12 @@ def generation(count):
     by_id[1]["widgets_values"] = [
         "Select combined profiles in Load H3 RefMods; files from our earlier character extractor work too. "
         "Select your H3 checkpoint, minimax text encoder and decode VAEs. Keep copies=1 and scramble_seed=-1. "
-        "The official node contains your complete Ref2VA prompt. The sample assumes 3 images per character; "
-        "use the loader's reference map to adjust Picture/Video/Audio labels to YOUR files. "
+        "The official node contains your complete Ref2VA prompt. mod_1 supplies Subject 1, mod_2 supplies Subject 2, etc. "
+        "Write Subject tags and dialogue normally; visual/voice reference associations are inserted internally. "
         "voice_reference_N=1 selects the first recording in slot N; 2 selects the second; 0 explicitly uses all. "
         "Do not upload the same cached character refs again to the official node. Binding experiments are not required."]
+    if count == 8:
+        by_id[1]["widgets_values"][0] += " Eight-character experimental capacity test: routing is CPU-tested; voice accuracy is not established. Start with one image and one short clean voice sample per character."
     by_id[12]["widgets_values"] = ["minimax_h3_video_vae_fp16.safetensors"]
     by_id[13]["widgets_values"] = ["minimax_h3_audio_vae_fp32.safetensors"]
     by_id[17]["widgets_values"][0] = f"video/refmod_{count}_characters"
@@ -156,14 +157,15 @@ def generation(count):
     for ident, pos in positions.items():
         by_id[ident]["pos"] = list(pos)
     graph["extra"] = {"ds": {"scale": 0.4, "offset": [30, 270]}}
-    write({1:"03_generate_one_character.json", 2:"04_generate_two_characters.json", 3:"05_generate_three_characters.json"}[count], graph)
+    write({1:"03_generate_one_character.json", 2:"04_generate_two_characters.json", 3:"05_generate_three_characters.json",
+           8:"06_generate_eight_characters_experimental.json"}[count], graph)
 
 
 def main():
     OUT.mkdir(exist_ok=True)
     extraction()
     extraction(video=True)
-    for count in (1, 2, 3):
+    for count in (1, 2, 3, 8):
         generation(count)
     # Old examples keep their connected output indices when the loader adds CLIP.
     path = ROOT / "examples/characters/07_import_upstream_refmods.json"
@@ -172,7 +174,7 @@ def main():
         if n["type"] == "MiniMaxH3RefModsLoader" and len(n["outputs"]) == 2:
             n["outputs"].append({"name": "clip", "type": "CLIP", "links": [], "slot_index": 2})
     path.write_text(json.dumps(graph, indent=2) + "\n")
-    print(f"Wrote five workflows to {OUT}")
+    print(f"Wrote six workflows to {OUT}")
 
 
 if __name__ == "__main__":

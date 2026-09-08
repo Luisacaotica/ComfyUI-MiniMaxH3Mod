@@ -70,6 +70,9 @@ def assemble_references(characters, max_tokens=0, av_layout="paired"):
         if not isinstance(mod, H3CharacterMod):
             raise ValueError("Use Extract/Load H3 Character or Import H3 RefMods as Character.")
         mod.validate()
+        if any(r.kind == "refmod_visual" for r in mod.references):
+            raise ValueError("This file preserves an original RefMod visual stack. Use Load H3 RefMods "
+                             "and Apply H3 RefMod with the official Reference to Video node.")
         refs.extend((owner, ref) for ref in mod.references)
     order = {"image": 0, "video": 1, "video_audio": 1, "audio": 2}
     refs.sort(key=lambda pair: order[pair[1].kind])

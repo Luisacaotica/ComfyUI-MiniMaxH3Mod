@@ -15,7 +15,7 @@ from safetensors import SafetensorError, safe_open
 from safetensors.torch import load_file, save_file
 
 META_KEY = "h3_character_meta"
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 MODEL_FAMILY = "minimax_h3_ref2va"
 
 
@@ -51,11 +51,11 @@ class CharacterReference:
     duration: float = 0.0
 
     def validate(self):
-        if self.kind not in ("image", "audio", "video", "video_audio"):
+        if self.kind not in ("image", "audio", "video", "video_audio", "refmod_visual"):
             raise ValueError(f"Unsupported character reference kind: {self.kind!r}")
         if not math.isfinite(self.duration) or self.duration < 0:
             raise ValueError("Reference duration must be finite and non-negative.")
-        if self.kind in ("image", "video", "video_audio"):
+        if self.kind in ("image", "video", "video_audio", "refmod_visual"):
             _tensor(self.visual, (1, 24, None, None, None), "H3 video latent")
             if self.visual.shape[-1] % 2 or self.visual.shape[-2] % 2:
                 raise ValueError("H3 video latent spatial dimensions must be even.")
@@ -66,6 +66,8 @@ class CharacterReference:
                     raise ValueError("Vision frames must be uint8 RGB or finite float32 RGB in [0,1].")
             if self.kind == "image" and (self.visual.shape[2] != 1 or len(self.frames) != 1):
                 raise ValueError("An image reference must contain one frame.")
+            if self.kind == "refmod_visual" and (len(self.frames) != 1 or self.duration != 0):
+                raise ValueError("An original RefMod stack has one presentation image and no physical duration.")
         elif self.visual is not None or self.frames is not None:
             raise ValueError("Standalone audio references cannot contain video tensors.")
         if self.kind in ("audio", "video_audio"):
@@ -109,11 +111,15 @@ class CharacterReference:
     def block(self):
         # Clone: downstream wrappers may mutate their payload, never the asset.
         block = {"kind": self.kind}
+        if self.kind == "refmod_visual":
+            # Original RefMod stacks may be arbitrary T, not a real video clock.
+            block["kind"] = "video" if self.visual.shape[2] > 1 else "image"
         if self.visual is not None:
             block.update(latent=self.visual.clone(), latent_h=self.visual.shape[3],
                          latent_w=self.visual.shape[4])
-        if self.kind in ("video", "video_audio"):
+        if block["kind"] in ("video", "video_audio"):
             block["latent_t"] = self.visual.shape[2]
+            block.update(ref_audio_t=0, audio_latent=None)
         if self.audio is not None:
             block.update(audio_latent=self.audio.clone(), ref_audio_t=self.audio.shape[-1])
         return block
@@ -216,7 +222,7 @@ def read_character_metadata(path):
     if raw is None:
         raise ValueError("This is not an H3 Character file. Use Load H3 RefMods for older visual mods.")
     meta = json.loads(raw)
-    if not isinstance(meta, dict) or meta.get("format_version") not in (1, FORMAT_VERSION):
+    if not isinstance(meta, dict) or meta.get("format_version") not in (1, 2, FORMAT_VERSION):
         raise ValueError("Unsupported H3 Character format version.")
     if meta.get("model_family") != MODEL_FAMILY:
         raise ValueError("This character is not compatible with MiniMax H3 Ref2VA.")
