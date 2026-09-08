@@ -12,6 +12,11 @@ Updates on `main` since v0.2.0: extraction widgets accept token budgets above
 preset now respects the requested frame limit. Counts remain integers;
 defaults are unchanged.
 
+**Experimental: H3 RefMod Text Encode** presents saved references to the native
+H3 text/vision encoder and reports their `<Picture n>`, `<Video n>` and
+`<Audio n>` labels. Character binding and voice quality still require generation
+tests; this is not a validated voice-cloning fix.
+
 - **RefMod Master** — extract image/video and audio references in one node,
   with separate VAE inputs, one output bundle and a combined token budget.
 - **Integrated audio** — create and load audio RefMods directly in this pack;
@@ -251,6 +256,7 @@ uses the explicit error/prefix-truncation policy described above.
 
 | Node | Purpose |
 | --- | --- |
+| H3 RefMod Text Encode | Encode a prompt with numbered saved references; outputs conditioning and the reference map. |
 | Extract H3 RefMod Master | Visual and/or audio extraction into one bundle, with separate VAE inputs. |
 | Extract H3 RefMod | Visual extraction, masks, compression and optional refinement. |
 | Extract H3 Audio RefMod | Audio extraction with duration and token limits. |
@@ -267,6 +273,43 @@ uses the explicit error/prefix-truncation policy described above.
 Older `Apply H3 RefMod (Cond)` workflows migrate to the unified Apply node.
 The legacy Bridge Disarm node remains for compatibility; bridge state now
 belongs to the MODEL branch.
+
+### Prompting with numbered RefMods (experimental)
+
+Connect `Load H3 RefMods → H3 RefMod Text Encode.mods`, the native H3 CLIP,
+and the H3 video VAE for visual references. Enter your prompt and connect the
+CONDITIONING output to the sampler's positive input. Keep the workflow's normal
+negative conditioning and generation latent. This node already attaches the
+references: do not Apply or Bridge the same bundle again.
+
+Connect `reference_map` to a text display to see the actual mapping. For example,
+if it reports `<Picture 1> = alice` and `<Picture 2> = beth`, try:
+
+```text
+[Shot1]
+The woman in <Picture 1> stands on the left.
+The woman in <Picture 2> stands on the right.
+They turn toward each other and smile.
+```
+
+The map counts each modality separately, in bundle order, excluding zero-strength
+entries. Copies receive additional labels. Stacked photos saved as one video-kind
+RefMod receive one `<Video n>` label, not one Picture label per original photo.
+Keep different characters in separate files. Neither the filename nor description
+is a trigger, and `<Subject n>` is not automatically bound to a loader slot.
+
+Visual presentation requires decoding the stored latent for Qwen; it adds VAE and
+vision-encoder work. Compressed latents reconstruct less detail than the original
+photos. Videos are decoded and then sampled for Qwen at 2 fps; `reference_fps`
+sets reconstructed playback timing (default 24). Original timing is not recovered
+from pooled or stacked refs. Audio presentation uses the native numbered label
+without decoding audio. Loader strengths affect the latents; saved Apply curves
+and overrides are not applied by this node. `max_total_tokens` limits DiT reference
+tokens, not Qwen tokens or VAE decode memory.
+
+Presentation/payload tests pass, but full GPU generation and identity/voice
+quality remain unverified. Compare against the old Apply workflow with the same
+references, prompt and seed.
 
 ### Saving without a Preview or sampler
 
@@ -431,6 +474,8 @@ H3's architecture or checkpoint behavior may contribute, but the cause has
 not been isolated. There is also a known difference in the current RefMod
 integration: Apply appends audio latents after text encoding, while the native
 H3 reference node also presents numbered audio labels during tokenization.
+The experimental H3 RefMod Text Encode node now uses that native presentation
+path, but voice transfer has not been retested with it.
 Until a matched native-versus-RefMod comparison rules out that difference,
 we cannot attribute the failure exclusively to H3 or rule out RefMod integration.
 

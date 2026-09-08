@@ -52,6 +52,7 @@ from comfy_api.latest import io
 from comfy_execution.validation import validate_node_input
 from comfy_extras.nodes_audio import vae_decode_audio
 from .library import register_routes
+from .prompt import MiniMaxH3RefModTextEncode
 
 from .common import (
     list_media_files,
@@ -2174,6 +2175,7 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
 
 
 NODE_CLASS_MAPPINGS = {
+    "MiniMaxH3RefModTextEncode": MiniMaxH3RefModTextEncode,
     "MiniMaxH3RefModSave": MiniMaxH3RefModSave,
     "MiniMaxH3RefModMasterExtract": MiniMaxH3RefModMasterExtract,
     "MiniMaxH3RefModInspect": MiniMaxH3RefModInspect,
@@ -2190,6 +2192,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "MiniMaxH3RefModTextEncode": "H3 RefMod Text Encode",
     "MiniMaxH3RefModSave": "Save H3 RefMods",
     "MiniMaxH3RefModMasterExtract": "Extract H3 RefMod Master",
     "MiniMaxH3RefModInspect": "Inspect H3 RefMod",
