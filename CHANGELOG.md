@@ -5,6 +5,19 @@ All notable changes are tracked here. Each version is also published as a
 so you can keep using an older version if a new one changes something you
 rely on.
 
+## v0.2.5 — 2026-09-08
+
+- Rename Extract nodes to Create, with unchanged node IDs. Full Reference and Compressed Reference replace the visible encode/training names; old mode values remain accepted. Rename the identity control to Refinement Steps.
+- Add visual budget_policy: truncate preserves existing behavior; error stops before saving when the visual token budget is exceeded. Master inherits the option.
+- Allow larger token/frame limits and preserve the requested frame count in the motion preset. Loader budgets default to 0 (disabled).
+- Add experimental H3 RefMod Text Encode with numbered reference presentation and a reference map. Support compatible ClipProj encoders and native batched video-VAE output.
+- Add optional full-video inspection with correct IMAGE output dimensions; retain the lightweight first-frame default.
+- Add playable music/video README examples and exclude local tests from distribution.
+
+Validation: 51 local regression tests passed; creation-label hooks checked with Node.js. Full GPU generation, projected-encoder quality and voice transfer remain unverified. Voice cloning is not claimed to work.
+
+Text Encode already attaches references: do not inject the same bundle again with Apply/Bridge. Integrated Continuum samplers still need a dedicated integration to use this conditioning. Full visual previews and text/vision presentation increase memory use.
+
 ## v0.2.0 — 2026-09-07
 
 ### Known limitation: voice transfer

@@ -5,9 +5,14 @@
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
 
-## What's new — v0.2.0
+## What's new — v0.2.5
 
-Updates on `main` since v0.2.0: extraction widgets accept token budgets above
+- **Clearer creation controls** — Create node titles, Full/Compressed Reference modes and Refinement Steps; old workflows remain accepted.
+- **Explicit visual budget policy** — choose truncate or error before saving, including Master.
+- **Compatibility fixes** — projected ClipProj encoders and batched H3 VAE decoding in Text Encode.
+- **Full visual inspection** — optional full-video preview, with a lightweight first-frame default.
+
+Since v0.2.0: extraction widgets accept token budgets above
 65,536 and frame limits above 16, including Master. The `motion_sequence`
 preset now respects the requested frame limit. Counts remain integers;
 defaults are unchanged.
