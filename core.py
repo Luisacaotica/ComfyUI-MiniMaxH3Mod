@@ -131,7 +131,8 @@ def read_refmod_meta(path_no_ext: str) -> Optional[Dict]:
 # Latent compression
 # ═══════════════════════════════════════════════════════════════════════════
 
-MODE_ALIASES = {"full": "encode", "pooled": "training"}
+MODE_ALIASES = {"full": "encode", "pooled": "training",
+                "Full Reference": "encode", "Compressed Reference": "training"}
 
 
 def normalize_mode(mode: str) -> str:

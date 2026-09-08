@@ -49,7 +49,7 @@ Full history: [CHANGELOG.md](CHANGELOG.md). Validation and remaining limitations
 
 RefMod saves MiniMax H3 image, video or audio references as reusable
 `.safetensors` files. Load a saved reference, combine it with others, and pass
-the bundle to **Apply H3 RefMod**. **Extract H3 RefMod Master** brings visual
+the bundle to **Apply H3 RefMod**. **Create H3 RefMod Master** brings visual
 and audio extraction into one node.
 
 Extraction uses the corresponding VAE. It does not train H3 weights or require
@@ -93,7 +93,19 @@ a candy racer in a karting scene.
 Tested on Windows; `os.path`-based paths so it should work on Linux/Mac, but
 only Windows has been exercised so far.
 
+Visual creation also offers `budget_policy`: `truncate` (the default) uses
+existing frame reduction to fit `max_tokens`; `error` stops before saving if
+the combined visual latent exceeds the budget after the multiplier. This applies
+to both Create and Master. `max_tokens=0` disables the cap. Master's audio policy
+and combined budget remain separate.
+
 ## What extraction actually optimizes
+
+The UI calls the modes **Full Reference** (`encode` internally) and
+**Compressed Reference** (`training` internally). **Refinement Steps** retains
+its historical input ID `identity`. Saved files and API workflows keep these
+internal identifiers; the descriptions below use them when discussing code.
+Node titles now use **Create** instead of **Extract**, with unchanged node IDs.
 
 A saved visual latent enters H3 through the native reference-token path.
 That shares the model's reference mechanism, but does **not** establish parity
@@ -146,7 +158,7 @@ ComfyUI's queue validator; no generation models are needed.
 
 ### One character extractor
 
-**Extract H3 RefMod Master** combines the visual extractor's inputs and controls
+**Create H3 RefMod Master** combines the visual extractor's inputs and controls
 with optional `audio` and `audio_vae` inputs. Connect the visual H3 VAE to `vae`
 (or the existing `av_encoder`) and the H3 audio VAE to `audio_vae`. Either modality
 can be omitted. Video-frame inputs do not implicitly include an audio track;
@@ -170,7 +182,7 @@ suffix is a different destination. With `save=False`, Master only returns the bu
 These are appearance and voice references, not joint character training or a
 guarantee of audiovisual synchronization. The individual extractors remain available.
 
-**Extract H3 Audio RefMod** accepts `AUDIO` and the H3 **audio** VAE (the
+**Create H3 Audio RefMod** accepts `AUDIO` and the H3 **audio** VAE (the
 32 kHz codec, not the video VAE). The implementation follows the tested
 ComfyUI-H3AudioMod encode path: stereo normalized `[1,32,2,T]` latents,
 40 frames/second, 2 tokens/frame, bounded 10-second encode chunks.
@@ -194,7 +206,10 @@ Close and Escape dismiss the library. Registered extra model roots are honored.
 
 **Inspect H3 RefMod** reports paths, shapes, metadata, saved config and total
 cost after copies. Optional matching `vae` enables `stored` or
-`compare_strength` previews: image outputs show the first latent frame;
+`compare_strength` previews: `visual_preview=first_frame` decodes the first
+latent frame by default; `full_video` decodes the complete stored visual latent
+as an IMAGE batch for a video-combine/save node. Full previews use more memory.
+In comparison mode, the stored sequence is followed by the weakened sequence;
 audio outputs preview up to two seconds. Comparison appends the weakened
 preview after the stored preview. This shows stored information, not a
 prediction of generated identity/style quality.
@@ -257,9 +272,9 @@ uses the explicit error/prefix-truncation policy described above.
 | Node | Purpose |
 | --- | --- |
 | H3 RefMod Text Encode | Encode a prompt with numbered saved references; outputs conditioning and the reference map. |
-| Extract H3 RefMod Master | Visual and/or audio extraction into one bundle, with separate VAE inputs. |
-| Extract H3 RefMod | Visual extraction, masks, compression and optional refinement. |
-| Extract H3 Audio RefMod | Audio extraction with duration and token limits. |
+| Create H3 RefMod Master | Visual and/or audio extraction into one bundle, with separate VAE inputs. |
+| Create H3 RefMod | Visual extraction, masks, compression and optional refinement. |
+| Create H3 Audio RefMod | Audio extraction with duration and token limits. |
 | Save H3 RefMods | Save a bundle as an output node; no downstream connection required. |
 | Load H3 RefMod Folder | Ordered image/video references from a folder. |
 | Load H3 RefMods | Up to 8 slots with strength, copies and optional total budget. |
@@ -440,7 +455,7 @@ same `retention` master control.
 
 ### Minimal workflow
 
-1. Connect images/video frames to **Extract H3 RefMod** or **Master**, with the
+1. Connect images/video frames to **Create H3 RefMod** or **Master**, with the
    standard H3 video VAE. On Master, connect AUDIO and the H3 audio VAE if wanted.
    Image slots use the first image of a batch; video slots preserve a sequence.
 2. Choose a name and optional subfolder. For a visual baseline, compare `encode`
@@ -510,7 +525,7 @@ music playing on background.
 
 An image and a video ref being extracted and fed into a conditioning node:
 
-![Extract H3 RefMod in use](examples/Extracting_example.png)
+![Create H3 RefMod in use](examples/Extracting_example.png)
 
 ### Loading mods
 
@@ -570,12 +585,12 @@ the prompt so the model has an anchor for what it's seeing.
 `Load H3 RefMod Folder` reads supported images (png/jpg/webp/bmp/gif) and video
 (mp4/webm/mov/mkv/avi) in a folder — images first, then videos, by filename.
 Type an absolute path, or a folder name inside ComfyUI's `input/` (empty =
-`input/` itself). Feed its `refs_bundle` output into `Extract H3 RefMod` to
+`input/` itself). Feed its `refs_bundle` output into `Create H3 RefMod` to
 bulk-extract a whole character shoot in one go:
 
 ```
 Load H3 RefMod Folder (folder: E:/vanellope_refs) ──refs_bundle──┐
-                                                                  ├─ Extract H3 RefMod ─> vanellope.safetensors
+                                                                  ├─ Create H3 RefMod ─> vanellope.safetensors
 ref_image_1 (hand-picked shots) ─────────────────────────────────┘
 ```
 

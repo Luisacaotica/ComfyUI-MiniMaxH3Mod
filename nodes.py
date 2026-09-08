@@ -332,7 +332,7 @@ def _validate_mod_inputs(required, input_types, kwargs):
             name = _normalize_mod_name(kwargs.get(field))
             if name and name not in expected:
                 return (f"RefMod input '{field}': '{name}' not found in models/refmods/ "
-                        "or legacy mods/ folders. Run Extract H3 RefMod first.")
+                        "or legacy mods/ folders. Run Create H3 RefMod first.")
     return True
 
 
@@ -906,7 +906,7 @@ class MiniMaxH3RefModApply(io.ComfyNode):
                     tooltip="MINIMAX_H3_COND (ComfyUI-MiniMaxH3 pack) or CONDITIONING "
                             "(core MiniMaxH3ReferenceToVideo)."),
                 io.Custom("H3_REF_MODS").Input("mods",
-                    tooltip="Bundle from Load H3 RefMods / Load H3 RefMod Axis / Extract H3 RefMod."),
+                    tooltip="Bundle from Load H3 RefMods / Load H3 RefMod Axis / Create H3 RefMod."),
                 io.Boolean.Input("override", default=False,
                     tooltip="Use the config fixed into the mods' own metadata (by 'Fix H3 RefMod "
                             "Config') instead of the widgets below: retention + curve come from "
@@ -1269,7 +1269,7 @@ class MiniMaxH3RefModContinuumBridge:
                                "-> Continuum Sampler 'model'. This link is what makes the "
                                "bridge execute before sampling."}),
                 "mods": ("H3_REF_MODS", {
-                    "tooltip": "Bundle from Load H3 RefMods / Extract H3 RefMod — injected "
+                    "tooltip": "Bundle from Load H3 RefMods / Create H3 RefMod — injected "
                                "into every Continuum chunk while 'enable' is on."}),
                 "enable": ("BOOLEAN", {"default": True,
                     "tooltip": "Master switch for the injection. Off = pure passthrough "
@@ -1358,7 +1358,7 @@ class MiniMaxH3RefModBridgeDisarm:
 class MiniMaxH3RefModFolderLoader:
     """Load every image/video in a folder as an ordered ref list.
 
-    Feed the ``refs_bundle`` input of Extract H3 RefMod to bulk-extract a
+    Feed the ``refs_bundle`` input of Create H3 RefMod to bulk-extract a
     whole folder (e.g. all photos of a character).  Images load first (by
     filename), then videos; unreadable files are skipped with a note.
     """
@@ -1503,7 +1503,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="MiniMaxH3RefModExtract",
-            display_name="Extract H3 RefMod",
+            display_name="Create H3 RefMod",
             description=(
                 "Turn one or more references of the same concept into a RefMod. "
                 "Stills plug into ref_image_1, video frames into ref_video_1, "
@@ -1520,13 +1520,11 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             inputs=[
                 io.String.Input("name", default="my_concept",
                     tooltip="Saved mod name (appears in the Load H3 RefMods dropdown after a reload)."),
-                io.Combo.Input("mode", options=["training", "encode"],
-                    default="training",
-                    tooltip="'training' (default) = compressed grid refined by the 'identity' "
-                            "dial — a good balance of identity vs tokens. 'encode' = straight "
-                            "full-res VAE encode (max identity, MB-size mod, ~1K tokens/img). "
-                            "Old mods saved as 'full'/'pooled' still load and normalize to "
-                            "these two."),
+                io.Combo.Input("mode", options=["Compressed Reference", "Full Reference", "training", "encode"],
+                    default="Compressed Reference",
+                    tooltip="Compressed Reference pools the latent and optionally refines its reconstruction. "
+                            "Full Reference stores the VAE encode, subject to resolution/frame/token limits. "
+                            "Neither mode trains H3 weights. Legacy mode values remain accepted."),
                 io.Combo.Input("concept_type", options=list(CONCEPT_TYPES), default="generic",
                     tooltip="What this mod represents — 'identity' (a specific person/character), "
                             "'pose_motion' (a pose/dance/gesture/camera move), 'clothing', "
@@ -1592,11 +1590,9 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "up to this many latent frames after encoding. Set at least the source "
                             "frame count to avoid encode-mode sampling. Images use 1. Higher values "
                             "increase memory and token cost; max_tokens can still reduce the result."),
-                io.Int.Input("identity", default=500, min=0, max=2000, step=50,
-                    tooltip="Pooled mode only: how tightly the mod clings to the reference "
-                            "(gradient refinement steps). Higher = more identity detail but sticks "
-                            "to the refs' framing/background; lower = deviates from the refs but "
-                            "loses detail. 500 is a good default; 0 = pure pooling."),
+                io.Int.Input("identity", display_name="Refinement Steps", default=500, min=0, max=2000, step=50,
+                    tooltip="Compressed Reference only: optimization steps to reduce latent reconstruction "
+                            "error. 0 uses pooling alone. This is not identity strength or model training."),
                 io.Boolean.Input("merge", default=False,
                     label_on="merge", label_off="stack",
                     tooltip="Merge mode (training only): instead of stacking each ref's own "
@@ -1643,6 +1639,8 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "the mod and printed in the info block — documentation only, no wiring."),
                 io.Boolean.Input("save", default=True, label_on="save", label_off="don't save",
                     tooltip="Save the mod to mods/ so Load H3 RefMods can pick it up later."),
+                io.Combo.Input("budget_policy", options=["truncate", "error"], default="truncate", optional=True,
+                    tooltip="On max_tokens overflow: truncate uses the existing frame reduction; error stops without saving. 0 max_tokens disables the cap."),
             ],
             outputs=[
                 io.Custom("H3_REF_MODS").Output("mods",
@@ -1657,7 +1655,9 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 ref_resolution=1024, pool_h=16, pool_w=16, latent_frames=16,
                 identity=500, multiplier=1, max_tokens=0, description="", save=True,
                 concept_type="generic", mask=None, background_retention=0.0, subfolder="",
-                merge=False, motion_only=False, extraction_preset="manual", **legacy) -> io.NodeOutput:
+                merge=False, motion_only=False, extraction_preset="manual", budget_policy="truncate", **legacy) -> io.NodeOutput:
+        if budget_policy not in ("truncate", "error"):
+            raise ValueError("Unknown visual token budget policy.")
         name = _sanitize_name(name)
         if extraction_preset == "identity_encode":
             mode, ref_resolution, identity, merge, motion_only = "encode", 1024, 0, False, False
@@ -1914,6 +1914,9 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         if multiplier > 1:
             latent = latent.repeat(1, 1, multiplier, 1, 1)  # data multiplier
         if max_tokens > 0:
+            tokens = latent.shape[2] * (latent.shape[3] // 2) * (latent.shape[4] // 2)
+            if budget_policy == "error" and tokens > max_tokens:
+                raise ValueError(f"RefMod '{name}' requires {tokens} visual tokens after multiplier; budget is {max_tokens}. Increase max_tokens, reduce extraction settings, or select truncate. Nothing was saved.")
             latent = fit_token_budget(latent, max_tokens, name)
         total_t = latent.shape[2]
         kind = "video" if total_t > 1 else "image"
@@ -1976,13 +1979,20 @@ class MiniMaxH3RefModInspect:
             "index": ("INT", {"default": 0, "min": 0, "max": 10000}),
             "preview": (["off", "stored", "compare_strength"],),
             "strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0}),
-        }, "optional": {"vae": ("VAE",)}}
+        }, "optional": {
+            "vae": ("VAE",),
+            "visual_preview": (["first_frame", "full_video"], {
+                "default": "first_frame",
+                "tooltip": "Full video decodes every stored latent frame; increases memory use. Comparison appends the weakened sequence after the stored sequence. Audio remains limited to two seconds.",
+            }),
+        }}
     RETURN_TYPES = ("STRING", "IMAGE", "AUDIO")
     RETURN_NAMES = ("details", "image_preview", "audio_preview")
     FUNCTION = "inspect"
     CATEGORY = "MiniMax-H3/mod"
 
-    def inspect(self, mods, index=0, preview="off", strength=0.5, vae=None):
+    def inspect(self, mods, index=0, preview="off", strength=0.5, vae=None,
+                visual_preview="first_frame"):
         error = _number_error("strength", strength, "FLOAT", {"min":0, "max":1})
         if error:
             raise ValueError(error)
@@ -2001,7 +2011,13 @@ class MiniMaxH3RefModInspect:
             if not 0 <= index < len(mods):
                 raise ValueError("Preview index is outside the RefMod bundle.")
             mod = mods[index][0]
-            z = mod.latent[..., :80] if mod.kind == "audio" else mod.latent[:, :, :1]
+            if visual_preview not in ("first_frame", "full_video"):
+                raise ValueError("Unknown visual preview scope.")
+            z = mod.latent
+            if mod.kind == "audio":
+                z = z[..., :80]
+            elif visual_preview == "first_frame":
+                z = z[:, :, :1]
             variants = [z]
             if preview == "compare_strength":
                 variants.append(strength * z + (1.0 - strength) * _blur_latent(z))
@@ -2014,7 +2030,15 @@ class MiniMaxH3RefModInspect:
                 decoded = [vae_decode_audio(vae, {"samples": value})["waveform"] for value in variants]
                 audio = {"waveform": torch.cat(decoded, dim=-1), "sample_rate": 32000}
             else:
-                images = torch.cat([vae.decode(value) for value in variants], dim=0)
+                decoded = []
+                for value in variants:
+                    pixels = vae.decode(value)
+                    if pixels.ndim == 5 and pixels.shape[0] == 1:
+                        pixels = pixels[0]
+                    if pixels.ndim != 4 or pixels.shape[-1] != 3:
+                        raise ValueError(f"Expected H3 decoded RGB frames, got {tuple(pixels.shape)}.")
+                    decoded.append(pixels)
+                images = torch.cat(decoded, dim=0)
         return (report, images, audio)
 
 
@@ -2097,8 +2121,9 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         schema = MiniMaxH3RefModExtract.define_schema()
+        budget_input = schema.inputs.pop()
         schema.node_id = "MiniMaxH3RefModMasterExtract"
-        schema.display_name = "Extract H3 RefMod Master"
+        schema.display_name = "Create H3 RefMod Master"
         schema.description = (
             "Extract appearance and/or audio into one RefMod bundle. Visual and audio "
             "VAEs run sequentially. Saves separate name_visual and name_audio files. "
@@ -2114,6 +2139,7 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
             io.Int.Input("max_total_tokens", default=0, min=0, max=1048576,
                          tooltip="Combined visual and audio budget. 0 disables this extra limit."),
         ])
+        schema.inputs.append(budget_input)
         schema.outputs = [io.Custom("H3_REF_MODS").Output("mods"), io.String.Output("details")]
         return schema
 
@@ -2194,10 +2220,10 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3RefModTextEncode": "H3 RefMod Text Encode",
     "MiniMaxH3RefModSave": "Save H3 RefMods",
-    "MiniMaxH3RefModMasterExtract": "Extract H3 RefMod Master",
+    "MiniMaxH3RefModMasterExtract": "Create H3 RefMod Master",
     "MiniMaxH3RefModInspect": "Inspect H3 RefMod",
-    "MiniMaxH3RefModAudioExtract": "Extract H3 Audio RefMod",
-    "MiniMaxH3RefModExtract": "Extract H3 RefMod",
+    "MiniMaxH3RefModAudioExtract": "Create H3 Audio RefMod",
+    "MiniMaxH3RefModExtract": "Create H3 RefMod",
     "MiniMaxH3RefModFolderLoader": "Load H3 RefMod Folder",
     "MiniMaxH3RefModsLoader": "Load H3 RefMods",
     "MiniMaxH3RefModsAxis": "Load H3 RefMod Axis",
