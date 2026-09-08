@@ -1,6 +1,7 @@
 """Present saved RefMod references to H3's native text/vision encoder."""
 
 import math
+import inspect
 
 from comfy.text_encoders.minimax import MiniMaxH3Tokenizer
 from comfy.ldm.minimax.vae import MiniMaxH3VideoVAE
@@ -29,8 +30,11 @@ class MiniMaxH3RefModTextEncode:
     def encode(self, clip, mods, prompt, reference_fps=24.0, max_total_tokens=0, vae=None):
         from .nodes import _check_token_budget
 
-        if not isinstance(clip.tokenizer, MiniMaxH3Tokenizer):
-            raise ValueError("Connect the native MiniMax H3 CLIP to RefMod Text Encode.")
+        native = isinstance(clip.tokenizer, MiniMaxH3Tokenizer)
+        # Projected encoders retain their smaller model's tokenizer, but expose
+        # H3 reference presentation on the CLIP wrapper itself (e.g. ClipProj).
+        if not native and "minimax_ref_items" not in inspect.signature(clip.tokenize).parameters:
+            raise ValueError("Connect an H3 CLIP or a projected CLIP supporting minimax_ref_items (such as current ClipProj).")
         if not math.isfinite(reference_fps) or not 1 <= reference_fps <= 120:
             raise ValueError("reference_fps must be between 1 and 120.")
         # Keep zero-strength slots out of both the presentation and DiT payload.
@@ -61,8 +65,12 @@ class MiniMaxH3RefModTextEncode:
                 # Decode the same weakened latent that the DiT receives. ComfyUI
                 # owns device placement and its decode OOM/tiled fallback.
                 pixels = vae.decode(block["latent"])
+                # ComfyUI video VAEs return BTHWC; older wrappers may already
+                # expose THWC. Each RefMod is one video, never a batch of videos.
+                if pixels.ndim == 5 and pixels.shape[0] == 1:
+                    pixels = pixels[0]
                 if pixels.ndim != 4 or pixels.shape[-1] != 3 or pixels.shape[0] < 1:
-                    raise ValueError("H3 video VAE must decode to [frames, height, width, 3].")
+                    raise ValueError(f"H3 video VAE must decode to [1, frames, height, width, 3] or [frames, height, width, 3]; got {tuple(pixels.shape)}.")
                 if kind == "image":
                     item["data"] = pixels[:1].cpu().clone()
                 else:
@@ -80,6 +88,8 @@ class MiniMaxH3RefModTextEncode:
         conditioning = clip.encode_from_tokens_scheduled(tokens)
         out = []
         for embedding, metadata in conditioning:
+            if "minimax_token_tags" not in metadata:
+                raise ValueError("The CLIP encoder did not return H3 minimax_token_tags. Use an H3-compatible encoder/projection.")
             metadata = dict(metadata)
             if blocks:
                 metadata["minimax_refs"] = list(blocks)

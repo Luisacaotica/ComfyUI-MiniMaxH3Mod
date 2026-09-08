@@ -276,7 +276,8 @@ belongs to the MODEL branch.
 
 ### Prompting with numbered RefMods (experimental)
 
-Connect `Load H3 RefMods → H3 RefMod Text Encode.mods`, the native H3 CLIP,
+Connect `Load H3 RefMods → H3 RefMod Text Encode.mods`, the native H3 CLIP
+or an H3-compatible projected CLIP (current ClipProj Loader all-in-one),
 and the H3 video VAE for visual references. Enter your prompt and connect the
 CONDITIONING output to the sampler's positive input. Keep the workflow's normal
 negative conditioning and generation latent. This node already attaches the

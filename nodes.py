@@ -738,7 +738,7 @@ class MiniMaxH3RefModsLoader:
                            "copies = noticeably stronger reference, but each copy costs its full "
                            "token count in every DiT block, so it slows down inference and eats "
                            "VRAM — 2-3 copies is the sweet spot, 10x will be very slow."})
-        return {"required": required, "optional": {"max_total_tokens": ("INT", {"default": 0, "min": 0, "max": 1048576})}}
+        return {"required": required, "optional": {"max_total_tokens": ("INT", {"default": 0, "min": 0, "max": 1048576, "tooltip": "0 disables the budget (default). Positive values reject bundles exceeding this token count after copies; they do not compress references."})}}
 
     RETURN_TYPES = ("H3_REF_MODS", "STRING")
     RETURN_NAMES = ("mods", "prompt_hint")
@@ -820,7 +820,7 @@ class MiniMaxH3RefModsAxis:
                 "tooltip": "Signed strength: negative uses mod_a, positive uses mod_b, 0 skips the "
                            "row. The magnitude is the reference strength (same 0-1 math as "
                            "Load H3 RefMods), so -0.5 injects mod_a at half strength."})
-        return {"required": required, "optional": {"max_total_tokens": ("INT", {"default": 0, "min": 0, "max": 1048576})}}
+        return {"required": required, "optional": {"max_total_tokens": ("INT", {"default": 0, "min": 0, "max": 1048576, "tooltip": "0 disables the budget (default). Positive values reject bundles exceeding this token count after copies; they do not compress references."})}}
 
     RETURN_TYPES = ("H3_REF_MODS", "STRING")
     RETURN_NAMES = ("mods", "prompt_hint")
