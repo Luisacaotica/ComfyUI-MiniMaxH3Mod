@@ -992,6 +992,8 @@ class MiniMaxH3RefModApply(io.ComfyNode):
             else (curve_direction, curve_shape, curve_value)
         # a selected graph preset overrides the curve widgets
         preset_name = ""
+        curve_source = "legacy strength_curve" if strength_curve is not None else "widgets"
+        retention_source = "widget"
         if graph_preset and graph_preset != "(none)":
             loaded = _load_graph_preset(graph_preset)
             if loaded is None:
@@ -1000,6 +1002,7 @@ class MiniMaxH3RefModApply(io.ComfyNode):
             else:
                 curve = loaded
                 preset_name = graph_preset
+                curve_source = f"graph preset {graph_preset}"
         # override: pull retention + curve from the first mod with a fixed config
         if override:
             found = None
@@ -1009,17 +1012,30 @@ class MiniMaxH3RefModApply(io.ComfyNode):
                     found = (m, saved)
                     break
             if found is None:
-                print("[MiniMaxH3RefModApply] override=True but no mod in the bundle "
-                      "has a saved config — using the manual parameters.")
+                print("[MiniMaxH3RefModApply] override=True but no valid saved curve "
+                      f"was found — keeping {curve_source} and widget retention.")
             else:
                 m, saved = found
                 cfg = getattr(m, "config", None) or {}
                 curve = saved
+                curve_source = f"saved config {m.name}"
                 if isinstance(cfg.get("retention"), (int, float)):
+                    retention_source = f"saved config {m.name}"
                     retention = min(1.0, max(0.0, float(cfg["retention"])))
                 print(f"[MiniMaxH3RefModApply] override: using config from '{m.name}' "
                       f"(retention={retention:.2f}, curve={curve[0]} + {curve[1]} "
                       f"@ {float(curve[2]):.2f})")
+        ignored = []
+        if curve_source != "widgets":
+            ignored.append(f"curve_direction, curve_shape, curve_value (using {curve_source})")
+        if retention_source != "widget":
+            ignored.append(f"retention (using {retention_source})")
+        if scramble_seed < 0 or len(mods) < 2:
+            ignored.append("scramble_mode, scramble_keep (scrambling inactive)")
+        elif scramble_mode in ("shuffle", "legacy_subset"):
+            ignored.append(f"scramble_keep ({scramble_mode})")
+        if ignored:
+            print("[MiniMaxH3RefModApply] ignored: " + "; ".join(ignored))
         img = render_debug_grid(curve, preset_name)
         if save_preset_as:
             saved = _save_graph_preset(save_preset_as, curve, img)
@@ -1526,7 +1542,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "Full Reference stores the VAE encode, subject to resolution/frame/token limits. "
                             "Neither mode trains H3 weights. Legacy mode values remain accepted."),
                 io.Combo.Input("concept_type", options=list(CONCEPT_TYPES), default="generic",
-                    tooltip="What this mod represents — 'identity' (a specific person/character), "
+                    tooltip="Metadata only; does not select a learning algorithm. What this mod represents — 'identity' (a specific person/character), "
                             "'pose_motion' (a pose/dance/gesture/camera move), 'clothing', "
                             "'background', 'style', or 'generic'. Stored in the mod and used by "
                             "the loaders' prompt_hint output (merges concept_type + description "
@@ -1631,7 +1647,8 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                             "after the multiplier. Lower latent_frames/ref_resolution instead to "
                             "avoid wasting encode work: ~23K tokens = one 1024px encode-mode video "
                             "ref at 16 frames."),
-                io.Combo.Input("extraction_preset", options=["manual", "identity_encode", "style_experimental", "motion_sequence"], default="manual", optional=True),
+                io.Combo.Input("extraction_preset", options=["manual", "identity_encode", "style_experimental", "motion_sequence"], default="manual", optional=True,
+                    tooltip="manual preserves controls. identity_encode: Full Reference, resolution=1024, steps=0, merge/motion_only off. style_experimental: Compressed Reference, pool=8x8, steps=150, merge/motion_only off. motion_sequence: Compressed Reference, pool=16x16, merge/motion_only off; preserves frame limit and Refinement Steps. It keeps appearance, not frame differences."),
                 io.String.Input("subfolder", default="", optional=True, tooltip="Optional folder inside models/refmods, for example celebs or voices."),
                 io.String.Input("description", default="", multiline=True,
                     tooltip="Optional text describing the concept (e.g. 'a ginger woman with messy "
@@ -1659,24 +1676,6 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         if budget_policy not in ("truncate", "error"):
             raise ValueError("Unknown visual token budget policy.")
         name = _sanitize_name(name)
-        if extraction_preset == "identity_encode":
-            mode, ref_resolution, identity, merge, motion_only = "encode", 1024, 0, False, False
-        elif extraction_preset == "style_experimental":
-            mode, pool_h, pool_w, identity, merge, motion_only = "training", 8, 8, 150, False, False
-        elif extraction_preset == "motion_sequence":
-            mode, pool_h, pool_w, merge, motion_only = "training", 16, 16, False, False
-        elif extraction_preset != "manual":
-            raise ValueError("Unknown extraction preset.")
-        mode = normalize_mode(mode)  # accept legacy 'full'/'pooled'
-        if concept_type == "identity" and mode == "training" and max(pool_h, pool_w) < 16:
-            print(
-                f"[MiniMaxH3RefModExtract] warning: concept_type='identity' with "
-                f"mode='training' at a {pool_h}x{pool_w} grid — pooling averages away "
-                f"exactly the detail that carries a face (this is almost certainly "
-                f"your 'chubby/older' drift). For a person, either switch mode='encode' "
-                f"(real identity, higher token cost) or raise pool_h/pool_w toward "
-                f"32x32+ and expect it to still be a soft approximation, not a lock."
-            )
         # old pre-Autogrow workflows pass their widget values through as kwargs:
         # map them onto the new inputs so those saved workflows keep running.
         # ``pool`` is the old height; ``pool_w`` arrives as the named param.
@@ -1686,6 +1685,39 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             pool_h = int(legacy["pool"])
             if pool_w == 16:  # old single-pool default: square grid
                 pool_w = pool_h
+        preset_replaced = ""
+        if extraction_preset == "identity_encode":
+            mode, ref_resolution, identity, merge, motion_only = "encode", 1024, 0, False, False
+            preset_replaced = "mode=Full Reference, ref_resolution=1024, Refinement Steps=0, merge=False, motion_only=False"
+        elif extraction_preset == "style_experimental":
+            mode, pool_h, pool_w, identity, merge, motion_only = "training", 8, 8, 150, False, False
+            preset_replaced = "mode=Compressed Reference, pool_h=8, pool_w=8, Refinement Steps=150, merge=False, motion_only=False"
+        elif extraction_preset == "motion_sequence":
+            mode, pool_h, pool_w, merge, motion_only = "training", 16, 16, False, False
+            preset_replaced = "mode=Compressed Reference, pool_h=16, pool_w=16, merge=False, motion_only=False (frame limit and Refinement Steps preserved)"
+        elif extraction_preset != "manual":
+            raise ValueError("Unknown extraction preset.")
+        mode = normalize_mode(mode)  # accept legacy 'full'/'pooled'
+        if preset_replaced:
+            print(f"[MiniMaxH3RefModExtract] preset={extraction_preset} replaces {preset_replaced}")
+        ignored = []
+        if mode == "encode":
+            ignored.append("pool_h, pool_w, Refinement Steps, merge, motion_only (Full Reference)")
+        if mask is None:
+            ignored.append("background_retention (no mask)")
+        if max_tokens == 0:
+            ignored.append("budget_policy (max_tokens=0)")
+        if ignored:
+            print("[MiniMaxH3RefModExtract] ignored: " + "; ".join(ignored))
+        if concept_type == "identity" and mode == "training" and max(pool_h, pool_w) < 16:
+            print(
+                f"[MiniMaxH3RefModExtract] warning: concept_type='identity' with "
+                f"mode='training' at a {pool_h}x{pool_w} grid — pooling averages away "
+                f"exactly the detail that carries a face (this is almost certainly "
+                f"your 'chubby/older' drift). For a person, either switch mode='encode' "
+                f"(real identity, higher token cost) or raise pool_h/pool_w toward "
+                f"32x32+ and expect it to still be a soft approximation, not a lock."
+            )
         if av_encoder is None and vae is None:
             raise ValueError(
                 "MiniMaxH3RefModExtract: connect an av_encoder (MiniMax-H3 "

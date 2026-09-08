@@ -111,6 +111,16 @@ and combined budget remain separate.
 
 ## What extraction actually optimizes
 
+Create/Master now print which visual controls the effective configuration ignores
+and which values a preset replaces. Apply reports actual curve/retention overrides
+and inactive scrambling controls. These are execution-time notices; widgets remain
+visible and editable, and cached nodes do not rerun just to print a notice.
+The preset tooltip lists exact assignments. `motion_sequence` preserves the frame
+limit and Refinement Steps and disables frame-difference extraction (`motion_only`)
+to retain the visual sequence. `concept_type` is metadata, not an algorithm selector.
+On Apply, `curve_shape` still matters with `constant` for non-linear shapes; a missing
+saved override does not disable manual controls or discard a valid graph preset.
+
 The UI calls the modes **Full Reference** (`encode` internally) and
 **Compressed Reference** (`training` internally). **Refinement Steps** retains
 its historical input ID `identity`. Saved files and API workflows keep these
