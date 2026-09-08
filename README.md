@@ -7,6 +7,11 @@
 
 ## What's new — v0.2.5
 
+On `main` after v0.2.5: **Refresh RefMods** updates the current Loader/Axis
+dropdowns from the RefMod folders without refreshing all ComfyUI models.
+Selections and connected inputs are preserved. The library's Refresh also
+updates that loader's dropdowns.
+
 - **Clearer creation controls** — Create node titles, Full/Compressed Reference modes and Refinement Steps; old workflows remain accepted.
 - **Explicit visual budget policy** — choose truncate or error before saving, including Master.
 - **Compatibility fixes** — projected ClipProj encoders and batched H3 VAE decoding in Text Encode.
@@ -622,6 +627,22 @@ contributions sequentially. This reduces repeated work; it does not change the
 objective into DreamBooth, Textual Inversion or control/target edit training.
 
 ### Motion-only extraction (experimental)
+
+For a motion-transfer comparison with native Ref2VA, start with one video,
+Full Reference, `multiplier=1`, `max_tokens=0` (or an adequate budget with
+`budget_policy=error`), and enough source frames. On Apply, use `retention=1`,
+`curve_direction=constant`, `curve_shape=linear`, `curve_value=1`, no preset
+override, and `scramble_seed=-1`. A constant linear curve at **0** replaces
+every reference frame with its blurred version; it does not disable the curve.
+Spatial pooling and Refinement Steps do not affect Full Reference mode.
+
+Apply alone does not present the reference video to Qwen. Compare with H3
+RefMod Text Encode when the workflow accepts external conditioning, using the
+reported Video label and without applying the same refs twice. This reconstructs
+visual presentation from saved latents, so it is still not an exact replay of
+native Ref2VA preprocessing or source timing. Dense textual motion descriptions
+are not a replacement for the reference's visual input. These are diagnostic
+settings, not validated optimal settings or a guarantee of motion fidelity.
 
 For longer video references, increase `latent_frames` and the token budget
 together. In `encode`, `latent_frames` limits sampled **source frames** before
