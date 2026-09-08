@@ -1,0 +1,466 @@
+{
+  "last_node_id": 9,
+  "last_link_id": 7,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VAELoader",
+      "pos": [
+        20,
+        180
+      ],
+      "size": [
+        340,
+        100
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "H3 video VAE",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "test_widget_names": [
+          "vae_name"
+        ]
+      },
+      "widgets_values": [
+        "SELECT_H3_VIDEO_VAE.safetensors"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "VAELoader",
+      "pos": [
+        400,
+        180
+      ],
+      "size": [
+        340,
+        100
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "H3 audio VAE",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "test_widget_names": [
+          "vae_name"
+        ]
+      },
+      "widgets_values": [
+        "SELECT_H3_AUDIO_VAE.safetensors"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "ExtractH3Character",
+      "pos": [
+        830,
+        400
+      ],
+      "size": [
+        430,
+        520
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video_vae",
+          "type": "VAE",
+          "link": 1
+        },
+        {
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 2
+        },
+        {
+          "name": "character_clip",
+          "type": "H3_CHARACTER_CLIP",
+          "link": null
+        },
+        {
+          "name": "image_1",
+          "type": "IMAGE",
+          "link": 3
+        },
+        {
+          "name": "image_2",
+          "type": "IMAGE",
+          "link": 4
+        },
+        {
+          "name": "image_3",
+          "type": "IMAGE",
+          "link": 5
+        },
+        {
+          "name": "audio_1",
+          "type": "AUDIO",
+          "link": 6
+        },
+        {
+          "name": "audio_2",
+          "type": "AUDIO",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "character",
+          "type": "H3_CHARACTER",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "Save appearance + voice",
+      "properties": {
+        "Node name for S&R": "ExtractH3Character",
+        "test_widget_names": [
+          "name",
+          "description",
+          "reference_short_edge",
+          "audio_start_seconds",
+          "audio_duration_seconds",
+          "save",
+          "overwrite"
+        ]
+      },
+      "widgets_values": [
+        "my_character",
+        "The character shown in the references.",
+        512,
+        0,
+        5,
+        true,
+        false
+      ]
+    },
+    {
+      "id": 4,
+      "type": "LoadImage",
+      "pos": [
+        20,
+        350
+      ],
+      "size": [
+        330,
+        320
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "Character image 1",
+      "properties": {
+        "Node name for S&R": "LoadImage",
+        "test_widget_names": [
+          "image"
+        ]
+      },
+      "widgets_values": [
+        "character_1.png"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "LoadImage",
+      "pos": [
+        20,
+        730
+      ],
+      "size": [
+        330,
+        320
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            4
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "Character image 2",
+      "properties": {
+        "Node name for S&R": "LoadImage",
+        "test_widget_names": [
+          "image"
+        ]
+      },
+      "widgets_values": [
+        "character_2.png"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "LoadImage",
+      "pos": [
+        20,
+        1110
+      ],
+      "size": [
+        330,
+        320
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            5
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "Character image 3",
+      "properties": {
+        "Node name for S&R": "LoadImage",
+        "test_widget_names": [
+          "image"
+        ]
+      },
+      "widgets_values": [
+        "character_3.png"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "LoadAudio",
+      "pos": [
+        400,
+        350
+      ],
+      "size": [
+        330,
+        180
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            6
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Same character, voice example 1",
+      "properties": {
+        "Node name for S&R": "LoadAudio",
+        "test_widget_names": [
+          "audio"
+        ]
+      },
+      "widgets_values": [
+        "voice_1.wav"
+      ]
+    },
+    {
+      "id": 8,
+      "type": "LoadAudio",
+      "pos": [
+        400,
+        590
+      ],
+      "size": [
+        330,
+        180
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Same character, voice example 2",
+      "properties": {
+        "Node name for S&R": "LoadAudio",
+        "test_widget_names": [
+          "audio"
+        ]
+      },
+      "widgets_values": [
+        "voice_2.wav"
+      ]
+    },
+    {
+      "id": 9,
+      "type": "Note",
+      "pos": [
+        20,
+        -20
+      ],
+      "size": [
+        1240,
+        150
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Read before running",
+      "properties": {
+        "Node name for S&R": "Note",
+        "test_widget_names": [
+          "text"
+        ]
+      },
+      "widgets_values": [
+        "Select your H3 video/audio VAEs. Upload 3 images and 2 voice clips of ONE character. Set a unique name, then Queue. Extraction saves models/refmods/characters/my_character.safetensors. Each voice clip uses its first 5 seconds by default. No diffusion model or CLIP is needed."
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      3,
+      0,
+      "VAE"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      1,
+      "VAE"
+    ],
+    [
+      3,
+      4,
+      0,
+      3,
+      3,
+      "IMAGE"
+    ],
+    [
+      4,
+      5,
+      0,
+      3,
+      4,
+      "IMAGE"
+    ],
+    [
+      5,
+      6,
+      0,
+      3,
+      5,
+      "IMAGE"
+    ],
+    [
+      6,
+      7,
+      0,
+      3,
+      6,
+      "AUDIO"
+    ],
+    [
+      7,
+      8,
+      0,
+      3,
+      7,
+      "AUDIO"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.65,
+      "offset": [
+        30,
+        30
+      ]
+    }
+  },
+  "version": 0.4
+}

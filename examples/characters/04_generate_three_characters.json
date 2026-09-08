@@ -1,0 +1,1048 @@
+{
+  "last_node_id": 19,
+  "last_link_id": 20,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Note",
+      "pos": [
+        20,
+        -230
+      ],
+      "size": [
+        1260,
+        190
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Read before running",
+      "properties": {
+        "Node name for S&R": "Note",
+        "test_widget_names": [
+          "text"
+        ]
+      },
+      "widgets_values": [
+        "Extract characters first, refresh ComfyUI node definitions, then select the character files and your H3 Ref2VA checkpoint, H3 text encoder, and both H3 VAEs. CLIP type must be minimax. Enter NEW dialogue/emotion and Queue. Reuse your known-good H3 sampler settings for quality comparisons. Saved references guide identity; they do not guarantee a voice lock."
+      ]
+    },
+    {
+      "id": 2,
+      "type": "LoadH3Character",
+      "pos": [
+        20,
+        0
+      ],
+      "size": [
+        360,
+        150
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "character",
+          "type": "H3_CHARACTER",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "Character 1",
+      "properties": {
+        "Node name for S&R": "LoadH3Character",
+        "test_widget_names": [
+          "character_file",
+          "voice_reference"
+        ]
+      },
+      "widgets_values": [
+        "character_a.safetensors",
+        "first"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "LoadH3Character",
+      "pos": [
+        20,
+        200
+      ],
+      "size": [
+        360,
+        150
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "character",
+          "type": "H3_CHARACTER",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "Character 2",
+      "properties": {
+        "Node name for S&R": "LoadH3Character",
+        "test_widget_names": [
+          "character_file",
+          "voice_reference"
+        ]
+      },
+      "widgets_values": [
+        "character_b.safetensors",
+        "first"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "LoadH3Character",
+      "pos": [
+        20,
+        400
+      ],
+      "size": [
+        360,
+        150
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "character",
+          "type": "H3_CHARACTER",
+          "links": [
+            4
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "Character 3",
+      "properties": {
+        "Node name for S&R": "LoadH3Character",
+        "test_widget_names": [
+          "character_file",
+          "voice_reference"
+        ]
+      },
+      "widgets_values": [
+        "character_c.safetensors",
+        "first"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "CLIPLoader",
+      "pos": [
+        20,
+        660
+      ],
+      "size": [
+        360,
+        160
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "H3 text encoder (type: minimax)",
+      "properties": {
+        "Node name for S&R": "CLIPLoader",
+        "test_widget_names": [
+          "clip_name",
+          "type",
+          "device"
+        ]
+      },
+      "widgets_values": [
+        "SELECT_H3_TEXT_ENCODER.safetensors",
+        "minimax",
+        "default"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "H3CharacterDialogueConditioning",
+      "pos": [
+        470,
+        0
+      ],
+      "size": [
+        560,
+        970
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 1
+        },
+        {
+          "name": "character",
+          "type": "H3_CHARACTER",
+          "link": 2
+        },
+        {
+          "name": "character_2",
+          "type": "H3_CHARACTER",
+          "link": 3
+        },
+        {
+          "name": "character_3",
+          "type": "H3_CHARACTER",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": [
+            13
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "resolved_prompt",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 2
+        },
+        {
+          "name": "reference_info",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 3
+        }
+      ],
+      "title": "Assign characters and NEW dialogue",
+      "properties": {
+        "Node name for S&R": "H3CharacterDialogueConditioning",
+        "test_widget_names": [
+          "scene",
+          "dialogue",
+          "emotion",
+          "delivery",
+          "language",
+          "width",
+          "height",
+          "length",
+          "max_reference_tokens",
+          "dialogue_2",
+          "emotion_2",
+          "delivery_2",
+          "dialogue_3",
+          "emotion_3",
+          "delivery_3"
+        ]
+      },
+      "widgets_values": [
+        "Three characters stand together in a quiet room. Character 1 is on the left, character 2 is in the middle, and character 3 is on the right. Each takes a turn to speak.",
+        "Are we ready?",
+        "curious",
+        "natural conversational speech",
+        "English",
+        768,
+        512,
+        243,
+        0,
+        "Yes, let's begin.",
+        "confident",
+        "natural conversational speech",
+        "I am ready too.",
+        "happy",
+        "natural conversational speech"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "UNETLoader",
+      "pos": [
+        1120,
+        -200
+      ],
+      "size": [
+        350,
+        130
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            5
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "H3 Ref2VA diffusion model",
+      "properties": {
+        "Node name for S&R": "UNETLoader",
+        "test_widget_names": [
+          "unet_name",
+          "weight_dtype"
+        ]
+      },
+      "widgets_values": [
+        "SELECT_H3_REF2VA_MODEL.safetensors",
+        "default"
+      ]
+    },
+    {
+      "id": 8,
+      "type": "MiniMaxH3SigmaShift",
+      "pos": [
+        1120,
+        0
+      ],
+      "size": [
+        350,
+        130
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            6,
+            8
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "H3 video/audio sigma shifts",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3SigmaShift",
+        "test_widget_names": [
+          "shift_video",
+          "shift_audio"
+        ]
+      },
+      "widgets_values": [
+        12,
+        3
+      ]
+    },
+    {
+      "id": 9,
+      "type": "BasicGuider",
+      "pos": [
+        1540,
+        0
+      ],
+      "size": [
+        280,
+        100
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 6
+        },
+        {
+          "name": "conditioning",
+          "type": "CONDITIONING",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "GUIDER",
+          "type": "GUIDER",
+          "links": [
+            10
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "H3 guider",
+      "properties": {
+        "Node name for S&R": "BasicGuider",
+        "test_widget_names": []
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 10,
+      "type": "BasicScheduler",
+      "pos": [
+        1120,
+        210
+      ],
+      "size": [
+        350,
+        150
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "SIGMAS",
+          "type": "SIGMAS",
+          "links": [
+            12
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Sampling schedule",
+      "properties": {
+        "Node name for S&R": "BasicScheduler",
+        "test_widget_names": [
+          "scheduler",
+          "steps",
+          "denoise"
+        ]
+      },
+      "widgets_values": [
+        "simple",
+        20,
+        1
+      ]
+    },
+    {
+      "id": 11,
+      "type": "RandomNoise",
+      "pos": [
+        1120,
+        430
+      ],
+      "size": [
+        350,
+        110
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "NOISE",
+          "type": "NOISE",
+          "links": [
+            9
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Seed (fixed for comparison)",
+      "properties": {
+        "Node name for S&R": "RandomNoise",
+        "test_widget_names": [
+          "noise_seed",
+          "control_after_generate"
+        ]
+      },
+      "widgets_values": [
+        12345,
+        "fixed"
+      ]
+    },
+    {
+      "id": 12,
+      "type": "KSamplerSelect",
+      "pos": [
+        1120,
+        620
+      ],
+      "size": [
+        350,
+        90
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "SAMPLER",
+          "type": "SAMPLER",
+          "links": [
+            11
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Sampler",
+      "properties": {
+        "Node name for S&R": "KSamplerSelect",
+        "test_widget_names": [
+          "sampler_name"
+        ]
+      },
+      "widgets_values": [
+        "res_multistep"
+      ]
+    },
+    {
+      "id": 13,
+      "type": "SamplerCustomAdvanced",
+      "pos": [
+        1540,
+        250
+      ],
+      "size": [
+        310,
+        210
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "noise",
+          "type": "NOISE",
+          "link": 9
+        },
+        {
+          "name": "guider",
+          "type": "GUIDER",
+          "link": 10
+        },
+        {
+          "name": "sampler",
+          "type": "SAMPLER",
+          "link": 11
+        },
+        {
+          "name": "sigmas",
+          "type": "SIGMAS",
+          "link": 12
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 13
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "LATENT",
+          "links": [
+            14,
+            16
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "denoised_output",
+          "type": "LATENT",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "Generate video + speech",
+      "properties": {
+        "Node name for S&R": "SamplerCustomAdvanced",
+        "test_widget_names": []
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 14,
+      "type": "VAELoader",
+      "pos": [
+        1920,
+        -170
+      ],
+      "size": [
+        340,
+        100
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            15
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "H3 video VAE",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "test_widget_names": [
+          "vae_name"
+        ]
+      },
+      "widgets_values": [
+        "SELECT_H3_VIDEO_VAE.safetensors"
+      ]
+    },
+    {
+      "id": 15,
+      "type": "VAELoader",
+      "pos": [
+        1920,
+        470
+      ],
+      "size": [
+        340,
+        100
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            17
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "H3 audio VAE",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "test_widget_names": [
+          "vae_name"
+        ]
+      },
+      "widgets_values": [
+        "SELECT_H3_AUDIO_VAE.safetensors"
+      ]
+    },
+    {
+      "id": 16,
+      "type": "VAEDecode",
+      "pos": [
+        1920,
+        30
+      ],
+      "size": [
+        340,
+        110
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 14
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 15
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            18
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Decode generated video",
+      "properties": {
+        "Node name for S&R": "VAEDecode",
+        "test_widget_names": []
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 17,
+      "type": "VAEDecodeAudio",
+      "pos": [
+        1920,
+        270
+      ],
+      "size": [
+        340,
+        110
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 16
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 17
+        }
+      ],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            19
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Decode generated speech",
+      "properties": {
+        "Node name for S&R": "VAEDecodeAudio",
+        "test_widget_names": []
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 18,
+      "type": "CreateVideo",
+      "pos": [
+        2340,
+        30
+      ],
+      "size": [
+        360,
+        170
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 18
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 19
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            20
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Join generated video + speech",
+      "properties": {
+        "Node name for S&R": "CreateVideo",
+        "test_widget_names": [
+          "fps",
+          "bit_depth",
+          "color_space"
+        ]
+      },
+      "widgets_values": [
+        24,
+        "auto",
+        "sRGB"
+      ]
+    },
+    {
+      "id": 19,
+      "type": "SaveVideo",
+      "pos": [
+        2340,
+        290
+      ],
+      "size": [
+        360,
+        300
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 20
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "title": "Save result",
+      "properties": {
+        "Node name for S&R": "SaveVideo",
+        "test_widget_names": [
+          "filename_prefix",
+          "format",
+          "format.codec"
+        ]
+      },
+      "widgets_values": [
+        "video/H3_three_characters",
+        "auto",
+        "auto"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      5,
+      0,
+      6,
+      0,
+      "CLIP"
+    ],
+    [
+      2,
+      2,
+      0,
+      6,
+      1,
+      "H3_CHARACTER"
+    ],
+    [
+      3,
+      3,
+      0,
+      6,
+      2,
+      "H3_CHARACTER"
+    ],
+    [
+      4,
+      4,
+      0,
+      6,
+      3,
+      "H3_CHARACTER"
+    ],
+    [
+      5,
+      7,
+      0,
+      8,
+      0,
+      "MODEL"
+    ],
+    [
+      6,
+      8,
+      0,
+      9,
+      0,
+      "MODEL"
+    ],
+    [
+      7,
+      6,
+      0,
+      9,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      8,
+      8,
+      0,
+      10,
+      0,
+      "MODEL"
+    ],
+    [
+      9,
+      11,
+      0,
+      13,
+      0,
+      "NOISE"
+    ],
+    [
+      10,
+      9,
+      0,
+      13,
+      1,
+      "GUIDER"
+    ],
+    [
+      11,
+      12,
+      0,
+      13,
+      2,
+      "SAMPLER"
+    ],
+    [
+      12,
+      10,
+      0,
+      13,
+      3,
+      "SIGMAS"
+    ],
+    [
+      13,
+      6,
+      1,
+      13,
+      4,
+      "LATENT"
+    ],
+    [
+      14,
+      13,
+      0,
+      16,
+      0,
+      "LATENT"
+    ],
+    [
+      15,
+      14,
+      0,
+      16,
+      1,
+      "VAE"
+    ],
+    [
+      16,
+      13,
+      0,
+      17,
+      0,
+      "LATENT"
+    ],
+    [
+      17,
+      15,
+      0,
+      17,
+      1,
+      "VAE"
+    ],
+    [
+      18,
+      16,
+      0,
+      18,
+      0,
+      "IMAGE"
+    ],
+    [
+      19,
+      17,
+      0,
+      18,
+      1,
+      "AUDIO"
+    ],
+    [
+      20,
+      18,
+      0,
+      19,
+      0,
+      "VIDEO"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.65,
+      "offset": [
+        30,
+        30
+      ]
+    }
+  },
+  "version": 0.4
+}

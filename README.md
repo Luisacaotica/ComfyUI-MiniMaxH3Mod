@@ -5,6 +5,17 @@
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
 
+## Character voice extension — v0.3.0 (unreleased)
+
+This branch includes upstream v0.2.0 at `7604ef4` plus reusable character
+profiles with complete native reference conditioning and synchronized speaking
+video support. Optional attention binding provides an all-H3 experiment.
+
+Start with [the implementation plan](VOICE_IMPLEMENTATION_PLAN.md),
+[character installation/workflows](CHARACTERS.md), and
+[controlled voice comparisons](VOICE_TESTING.md).
+Generation quality with the released H3 checkpoint remains to be measured.
+
 ## What's new — v0.2.0
 
 - **RefMod Master** — extract image/video and audio references in one node,
@@ -71,7 +82,7 @@ a candy racer in a karting scene.
    remain accepted by Apply without importing their package.
 
 2. **This pack**: clone into `custom_nodes/` and restart ComfyUI. Python
-   deps (`safetensors`, `numpy`, `Pillow`) are in `requirements.txt` and are
+   deps (`safetensors`, `numpy`, `Pillow`, `av`) are in `requirements.txt` and are
    installed automatically by ComfyUI Manager (or `pip install -r
    requirements.txt` manually). `opencv-python`/`imageio` are optional video
    backends for the folder loader.

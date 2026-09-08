@@ -4,6 +4,9 @@ torch
 safetensors
 numpy
 Pillow
+# Timestamp-aware video + soundtrack decoding for Character RefMods.
+# PyAV wheels contain FFmpeg libraries; no system FFmpeg is required.
+av>=14.0.0
 
 # Optional video loader backends (soft-imported in common.py). Install one if
 # the Load H3 RefMod Folder node can't read your video files.

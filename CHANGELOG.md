@@ -5,6 +5,48 @@ All notable changes are tracked here. Each version is also published as a
 so you can keep using an older version if a new one changes something you
 rely on.
 
+## v0.3.0 — unreleased character extension
+
+- Integrate upstream v0.2.0 at `7604ef4`, preserving Master/audio/library/loader
+  fixes and upstream node IDs.
+- Add **H3 Character Reference Conditioning** for unchanged full prompts,
+  native reference presentation, diagnostic AV packing controls, and content
+  fingerprints for matched trials.
+- Add **Import H3 RefMods as Character** for upstream image/audio files, using
+  original source images to restore vision presentation without re-encoding
+  latents. Reject pooled visuals, duplicate copies and unpairable video stacks.
+- Introduce character format v2 with float vision pixels and v1 read support;
+  match native image preparation and standalone-audio resampling. Honor
+  registered RefMod roots while retaining default-folder discovery.
+- Add import and one/two/three-character comparison workflows, a blank 45-run
+  sheet, and a results tool that rejects unmatched runs and includes failures.
+
+- Add **H3 Character Voice Binding (Experimental)**: soft attention bias from
+  each reference voice to its character's visuals, and optional timed bias
+  from generated audio to its assigned reference voice. Uses H3's native
+  attention hook on a cloned model, with an exact off mode and compatibility
+  guards. No weights or stored latents are changed.
+- Complete the six-section reference prompt and number speakers by actual
+  speaking order. Add optional validated speaking windows shared by the
+  prompt and attention controls.
+- Add two-/three-character comparison workflows and a blank trial sheet;
+  test numerical attention behavior and tiny native H3 forwards. Voice-swap
+  reduction with released H3 weights remains unmeasured.
+- Add **Load H3 Character Clip**, **Extract H3 Character**, **Load H3
+  Character**, and **H3 Character Dialogue Conditioning**.
+- Save one character's image references and separate voice examples, or a
+  synchronized speaking video/audio pair, in a versioned safetensors asset.
+- Preserve source audio timing, normalize voice input to stereo 32 kHz, and
+  align paired clips to the native H3 temporal grid. Add PyAV dependency.
+- Build native H3 reference labels and conditioning payloads together for up
+  to three characters, with separate new dialogue/emotion/delivery inputs.
+- Validate shapes, timing, and reference budgets; save atomically; detect
+  modified files on reload. Preserve the original visual RefMod nodes.
+- Include four workflow JSON examples, a setup guide, CPU regression tests,
+  and a smoke check against the actual ComfyUI H3 implementation.
+- This is reusable reference conditioning, not learned speaker training or
+  a verified fix for voice swapping. Render quality still requires H3 testing.
+
 ## v0.2.0 — 2026-09-07
 
 ### Known limitation: voice transfer

@@ -1,0 +1,296 @@
+{
+  "last_node_id": 5,
+  "last_link_id": 3,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VAELoader",
+      "pos": [
+        20,
+        190
+      ],
+      "size": [
+        340,
+        100
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "H3 video VAE",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "test_widget_names": [
+          "vae_name"
+        ]
+      },
+      "widgets_values": [
+        "SELECT_H3_VIDEO_VAE.safetensors"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "VAELoader",
+      "pos": [
+        400,
+        190
+      ],
+      "size": [
+        340,
+        100
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "H3 audio VAE",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "test_widget_names": [
+          "vae_name"
+        ]
+      },
+      "widgets_values": [
+        "SELECT_H3_AUDIO_VAE.safetensors"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "ExtractH3Character",
+      "pos": [
+        830,
+        190
+      ],
+      "size": [
+        430,
+        520
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video_vae",
+          "type": "VAE",
+          "link": 1
+        },
+        {
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 2
+        },
+        {
+          "name": "character_clip",
+          "type": "H3_CHARACTER_CLIP",
+          "link": 3
+        },
+        {
+          "name": "image_1",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "image_2",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "image_3",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "audio_1",
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "audio_2",
+          "type": "AUDIO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "character",
+          "type": "H3_CHARACTER",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "Save appearance + voice",
+      "properties": {
+        "Node name for S&R": "ExtractH3Character",
+        "test_widget_names": [
+          "name",
+          "description",
+          "reference_short_edge",
+          "audio_start_seconds",
+          "audio_duration_seconds",
+          "save",
+          "overwrite"
+        ]
+      },
+      "widgets_values": [
+        "my_character",
+        "The character shown in the references.",
+        512,
+        0,
+        5,
+        true,
+        false
+      ]
+    },
+    {
+      "id": 4,
+      "type": "LoadH3CharacterClip",
+      "pos": [
+        20,
+        370
+      ],
+      "size": [
+        520,
+        260
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "character_clip",
+          "type": "H3_CHARACTER_CLIP",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "preview_frame",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 1
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [],
+          "slot_index": 2
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 3
+        }
+      ],
+      "title": "Speaking video with embedded audio",
+      "properties": {
+        "Node name for S&R": "LoadH3CharacterClip",
+        "test_widget_names": [
+          "video_file",
+          "start_seconds",
+          "duration_seconds",
+          "max_edge"
+        ]
+      },
+      "widgets_values": [
+        "character.mp4",
+        0,
+        5,
+        768
+      ]
+    },
+    {
+      "id": 5,
+      "type": "Note",
+      "pos": [
+        20,
+        -20
+      ],
+      "size": [
+        1240,
+        160
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Read before running",
+      "properties": {
+        "Node name for S&R": "Note",
+        "test_widget_names": [
+          "text"
+        ]
+      },
+      "widgets_values": [
+        "Select both H3 VAEs. Put a speaking video in ComfyUI/input and enter its filename, or enter an absolute path. Set the interval and character name, then Queue. The clip and soundtrack use the same timeline and are saved together. Duration rounds down to H3's valid frame grid. Use one visible speaker."
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      3,
+      0,
+      "VAE"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      1,
+      "VAE"
+    ],
+    [
+      3,
+      4,
+      0,
+      3,
+      2,
+      "H3_CHARACTER_CLIP"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.65,
+      "offset": [
+        30,
+        30
+      ]
+    }
+  },
+  "version": 0.4
+}

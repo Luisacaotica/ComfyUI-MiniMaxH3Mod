@@ -21,9 +21,17 @@ Standalone extraction (image/video files): see extract_mod.py
 """
 
 __author__ = "Luisa (luisacaotica)"
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 WEB_DIRECTORY = "./web"
 
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+from .character_nodes import (
+    NODE_CLASS_MAPPINGS as CHARACTER_NODE_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_NODE_DISPLAY_NAME_MAPPINGS,
+)
+
+NODE_CLASS_MAPPINGS.update(CHARACTER_NODE_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS.update(CHARACTER_NODE_DISPLAY_NAME_MAPPINGS)
+
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

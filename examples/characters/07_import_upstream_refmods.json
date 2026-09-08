@@ -1,0 +1,256 @@
+{
+  "last_node_id": 4,
+  "last_link_id": 2,
+  "version": 0.4,
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Note",
+      "pos": [
+        20,
+        -250
+      ],
+      "size": [
+        420,
+        300
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Import existing upstream RefMods",
+      "properties": {
+        "Node name for S&R": "Note",
+        "test_widget_names": [
+          "text"
+        ]
+      },
+      "widgets_values": [
+        "Select one character's encode-mode image RefMod and audio RefMod in the loader. Keep strength=1 and copies=1. Load the matching original image. Queue to save a Character file, then use workflows 08-10. For multiple separate image RefMods, connect matching image_2/image_3 or image batches in loader order. Video/pooled stacks must be re-extracted from source; filenames cannot recover synchronization."
+      ]
+    },
+    {
+      "id": 2,
+      "type": "MiniMaxH3RefModsLoader",
+      "pos": [
+        20,
+        30
+      ],
+      "size": [
+        420,
+        300
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "mods",
+          "type": "H3_REF_MODS",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "prompt_hint",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "Select matching visual + voice RefMods",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3RefModsLoader",
+        "test_widget_names": [
+          "show_info",
+          "mod_1",
+          "strength_1",
+          "copies_1",
+          "mod_2",
+          "strength_2",
+          "copies_2",
+          "mod_3",
+          "strength_3",
+          "copies_3",
+          "mod_4",
+          "strength_4",
+          "copies_4",
+          "mod_5",
+          "strength_5",
+          "copies_5",
+          "mod_6",
+          "strength_6",
+          "copies_6",
+          "mod_7",
+          "strength_7",
+          "copies_7",
+          "mod_8",
+          "strength_8",
+          "copies_8",
+          "max_total_tokens"
+        ]
+      },
+      "widgets_values": [
+        true,
+        "(none)",
+        1.0,
+        1,
+        "(none)",
+        1.0,
+        1,
+        "(none)",
+        1.0,
+        1,
+        "(none)",
+        1.0,
+        1,
+        "(none)",
+        1.0,
+        1,
+        "(none)",
+        1.0,
+        1,
+        "(none)",
+        1.0,
+        1,
+        "(none)",
+        1.0,
+        1,
+        0
+      ]
+    },
+    {
+      "id": 3,
+      "type": "LoadImage",
+      "pos": [
+        480,
+        30
+      ],
+      "size": [
+        420,
+        300
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "Matching original source image",
+      "properties": {
+        "Node name for S&R": "LoadImage",
+        "test_widget_names": [
+          "image"
+        ]
+      },
+      "widgets_values": [
+        "character_a.png"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "ImportH3RefModsAsCharacter",
+      "pos": [
+        980,
+        30
+      ],
+      "size": [
+        420,
+        300
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mods",
+          "type": "H3_REF_MODS",
+          "link": 1
+        },
+        {
+          "name": "image_1",
+          "type": "IMAGE",
+          "link": 2
+        },
+        {
+          "name": "image_2",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "image_3",
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "character",
+          "type": "H3_CHARACTER",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "title": "Save reusable character",
+      "properties": {
+        "Node name for S&R": "ImportH3RefModsAsCharacter",
+        "test_widget_names": [
+          "name",
+          "description",
+          "save",
+          "overwrite"
+        ]
+      },
+      "widgets_values": [
+        "character_a",
+        "",
+        true,
+        false
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      2,
+      0,
+      4,
+      0,
+      "H3_REF_MODS"
+    ],
+    [
+      2,
+      3,
+      0,
+      4,
+      1,
+      "IMAGE"
+    ]
+  ]
+}
