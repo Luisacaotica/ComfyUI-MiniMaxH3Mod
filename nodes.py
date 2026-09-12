@@ -53,6 +53,7 @@ from comfy_execution.validation import validate_node_input
 from comfy_extras.nodes_audio import vae_decode_audio
 from .library import register_routes
 from .prompt import MiniMaxH3RefModTextEncode
+from .bundle import load_bundle, save_bundle, members as bundle_members
 
 from .common import (
     list_media_files,
@@ -195,7 +196,12 @@ def _list_mod_names() -> List[str]:
             continue
         seen.add(name)  # match _find_mod_path's first-search-directory priority
         meta = read_refmod_meta(stem)
-        if isinstance(meta, dict) and meta.get("kind") in ("image", "video", "audio"):
+        if isinstance(meta, dict) and meta.get("kind") == "bundle":
+            try:
+                bundle_members(meta)
+            except ValueError:
+                continue
+        if isinstance(meta, dict) and meta.get("kind") in ("image", "video", "audio", "bundle"):
             names.add(name)
     _MOD_LIST_CACHE_KEY, _MOD_LIST_CACHE_VAL = key, sorted(names)
     return _MOD_LIST_CACHE_VAL
@@ -315,12 +321,12 @@ def _check_loader_numbers(required, kwargs):
 def _validate_mod_inputs(required, input_types, kwargs):
     linked = input_types or {}
     for field, (expected, _options) in required.items():
-        is_mod = isinstance(expected, list)
+        is_mod = isinstance(expected, list) and field.startswith("mod_")
         if field in linked:
             received = linked[field]
             if isinstance(received, list):
                 received = "COMBO"
-            allowed = "STRING,COMBO" if is_mod else expected
+            allowed = "STRING,COMBO" if isinstance(expected, list) else expected
             if not validate_node_input(received, allowed):
                 return f"RefMod input '{field}': expected {allowed}, got {received}."
             continue  # upstream values are resolved at execution, not queue time
@@ -328,6 +334,9 @@ def _validate_mod_inputs(required, input_types, kwargs):
             error = _number_error(field, kwargs[field], expected, _options)
             if error:
                 return error
+        if isinstance(expected, list) and not is_mod and kwargs.get(field) is not None:
+            if kwargs[field] not in expected:
+                return f"RefMod input '{field}': invalid selection."
         if is_mod:
             name = _normalize_mod_name(kwargs.get(field))
             if name and name not in expected:
@@ -710,6 +719,34 @@ def _prompt_hint(loads) -> str:
 # Node: MiniMaxH3RefModsLoader
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _component_inputs(slots):
+    options = {}
+    for i in range(1, slots + 1):
+        options[f"components_{i}"] = (["All", "Visual", "Audio"], {"default": "All",
+            "tooltip": "Select the modalities to load from this slot. Excluded tensors are not loaded. Also applies to standalone RefMods."})
+        for kind in ("visual", "audio"):
+            options[f"{kind}_strength_{i}"] = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0,
+                "step": 0.01, "tooltip": "Multiplies the slot strength for this modality. 0 skips loading it."})
+    return options
+
+
+def _load_components(name, slot, kwargs):
+    selection = kwargs.get(f"components_{slot}", "All")
+    if selection not in ("All", "Visual", "Audio"):
+        raise ValueError("Components must be All, Visual or Audio.")
+    weights = {kind: float(kwargs.get(f"{kind}_strength_{slot}", 1.0)) for kind in ("visual", "audio")}
+    path = _find_mod_path(name)
+    meta = read_refmod_meta(path)
+    if not isinstance(meta, dict):
+        raise ValueError(f"'{name}' has no valid RefMod metadata.")
+    if meta.get("kind") == "bundle":
+        return load_bundle(path, selection, weights["visual"], weights["audio"])
+    kind = "audio" if meta.get("kind") == "audio" else "visual"
+    if weights[kind] <= 0 or (selection != "All" and selection.lower() != kind):
+        return []
+    return [(_load_mod(name), weights[kind])]
+
+
 class MiniMaxH3RefModsLoader:
     """Load 1-8 RefMods in one node, each with its own typed strength."""
 
@@ -738,7 +775,10 @@ class MiniMaxH3RefModsLoader:
                            "copies = noticeably stronger reference, but each copy costs its full "
                            "token count in every DiT block, so it slows down inference and eats "
                            "VRAM — 2-3 copies is the sweet spot, 10x will be very slow."})
-        return {"required": required, "optional": {"max_total_tokens": ("INT", {"default": 0, "min": 0, "max": 1048576, "tooltip": "0 disables the budget (default). Positive values reject bundles exceeding this token count after copies; they do not compress references."})}}
+        optional = {"max_total_tokens": ("INT", {"default": 0, "min": 0, "max": 1048576,
+            "tooltip": "0 disables the budget. Positive values limit selected components after copies."})}
+        optional.update(_component_inputs(cls.MAX_SLOTS))
+        return {"required": required, "optional": optional}
 
     RETURN_TYPES = ("H3_REF_MODS", "STRING")
     RETURN_NAMES = ("mods", "prompt_hint")
@@ -755,15 +795,16 @@ class MiniMaxH3RefModsLoader:
         return _mods_changed(kwargs)
 
     def load(self, show_info=False, max_total_tokens=0, **kwargs):
-        _check_loader_numbers(self.INPUT_TYPES()["required"], kwargs)
+        schema = self.INPUT_TYPES()
+        _check_loader_numbers({**schema["required"], **schema["optional"]}, kwargs)
         rows = []  # (mod, strength, copies)
         for i in range(1, self.MAX_SLOTS + 1):
             name = _normalize_mod_name(kwargs.get(f"mod_{i}"))
             strength = float(kwargs.get(f"strength_{i}", 1.0))
             if not name or strength <= 0.0:
                 continue
-            rows.append((_load_mod(name), min(1.0, max(0.0, strength)),
-                         int(kwargs.get(f"copies_{i}", 1))))
+            for mod, component_strength in _load_components(name, i, kwargs):
+                rows.append((mod, strength * component_strength, int(kwargs.get(f"copies_{i}", 1))))
         loads = []
         for mod, strength, copies in rows:
             loads.extend([(mod, strength)] * copies)
@@ -820,7 +861,10 @@ class MiniMaxH3RefModsAxis:
                 "tooltip": "Signed strength: negative uses mod_a, positive uses mod_b, 0 skips the "
                            "row. The magnitude is the reference strength (same 0-1 math as "
                            "Load H3 RefMods), so -0.5 injects mod_a at half strength."})
-        return {"required": required, "optional": {"max_total_tokens": ("INT", {"default": 0, "min": 0, "max": 1048576, "tooltip": "0 disables the budget (default). Positive values reject bundles exceeding this token count after copies; they do not compress references."})}}
+        optional = {"max_total_tokens": ("INT", {"default": 0, "min": 0, "max": 1048576,
+            "tooltip": "0 disables the budget. Positive values limit selected components after copies."})}
+        optional.update(_component_inputs(cls.MAX_SLOTS))
+        return {"required": required, "optional": optional}
 
     RETURN_TYPES = ("H3_REF_MODS", "STRING")
     RETURN_NAMES = ("mods", "prompt_hint")
@@ -837,7 +881,8 @@ class MiniMaxH3RefModsAxis:
         return _mods_changed(kwargs)
 
     def load(self, show_info=False, max_total_tokens=0, **kwargs):
-        _check_loader_numbers(self.INPUT_TYPES()["required"], kwargs)
+        schema = self.INPUT_TYPES()
+        _check_loader_numbers({**schema["required"], **schema["optional"]}, kwargs)
         loads = []
         for i in range(1, self.MAX_SLOTS + 1):
             value = float(kwargs.get(f"value_{i}", 0.0))
@@ -847,7 +892,7 @@ class MiniMaxH3RefModsAxis:
             name = _normalize_mod_name(kwargs.get(f"mod_{side}_{i}"))
             if not name:
                 continue
-            loads.append((_load_mod(name), min(1.0, abs(value))))
+            loads.extend((mod, abs(value) * weight) for mod, weight in _load_components(name, i, kwargs))
         _check_token_budget(loads, max_total_tokens)
         if loads:
             print("[MiniMaxH3RefModsAxis] " + ", ".join(
@@ -1247,11 +1292,13 @@ class MiniMaxH3RefModConfig:
             mod, strength = item if isinstance(item, tuple) else (item, 1.0)
             mod.config = dict(cfg)
             path = getattr(mod, "path", "") or os.path.join(refmods_dir(), mod.name)
-            if path not in saved_paths:
+            member_key = (path, mod.bundle_index)
+            if member_key not in saved_paths:
                 mod.save(path)
-                saved_paths.add(path)
+                saved_paths.add(member_key)
             mod.path = path
-            _cache_mod(path, mod)
+            if mod.bundle_index < 0:
+                _cache_mod(path, mod)
             out.append((mod, strength))
             print(f"[MiniMaxH3RefModConfig] '{mod.name}': config fixed into "
                   f"metadata (retention={cfg['retention']:.2f}, "
@@ -2126,6 +2173,8 @@ class MiniMaxH3RefModSave:
         if not mods:
             raise ValueError("The RefMod bundle is empty; nothing to save.")
         planned, used_paths = {}, set()
+        source_bundles = {os.path.normcase(os.path.abspath(mod.path))
+                          for mod, _strength in mods if mod.bundle_index >= 0}
         for mod, _strength in mods:
             if id(mod) in planned:
                 continue
@@ -2137,8 +2186,10 @@ class MiniMaxH3RefModSave:
                 name = f"{base}_{index}"
                 index += 1
                 path = mod_output_path(name, subfolder)
+            if os.path.normcase(os.path.abspath(path)) in source_bundles:
+                raise ValueError("Standalone export would overwrite a source bundle. Choose another prefix or subfolder.")
             used_paths.add(os.path.normcase(path))
-            planned[id(mod)] = replace(mod, name=name, path=path)
+            planned[id(mod)] = replace(mod, name=name, path=path, bundle_index=-1)
         paths = []
         for mod in planned.values():
             paths.append(mod.save(mod.path))
@@ -2147,6 +2198,30 @@ class MiniMaxH3RefModSave:
         report = "\n".join(paths)
         print(f"[RefMod Save] Saved {len(paths)} file(s):\n{report}")
         return {"ui": {"text": paths}, "result": (out, report)}
+
+
+class MiniMaxH3RefModBundleSave:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"mods": ("H3_REF_MODS",),
+                             "name": ("STRING", {"default": "character"}),
+                             "subfolder": ("STRING", {"default": ""})}}
+
+    RETURN_TYPES = ("H3_REF_MODS", "STRING")
+    RETURN_NAMES = ("mods", "saved_path")
+    FUNCTION = "save"
+    OUTPUT_NODE = True
+    CATEGORY = "MiniMax-H3/mod"
+    DESCRIPTION = "Save selected references in one version-5 file. Copies are stored once; strengths are not baked in. Existing destination files are replaced."
+
+    def save(self, mods, name="character", subfolder=""):
+        name = _sanitize_name(name)
+        path = mod_output_path(name, subfolder)
+        destination = save_bundle(path, name, mods)
+        loaded = load_bundle(path)
+        indices = {id(mod): i for i, mod in enumerate({id(m): m for m, _ in mods}.values())}
+        output = [(loaded[indices[id(mod)]][0], strength) for mod, strength in mods]
+        return {"ui": {"text": [destination]}, "result": (output, destination)}
 
 
 class MiniMaxH3RefModMasterExtract(io.ComfyNode):
@@ -2158,7 +2233,7 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
         schema.display_name = "Create H3 RefMod Master"
         schema.description = (
             "Extract appearance and/or audio into one RefMod bundle. Visual and audio "
-            "VAEs run sequentially. Saves separate name_visual and name_audio files. "
+            "VAEs run sequentially. Choose separate files or a single file with save_layout. "
             "This extracts references; it does not jointly train identity and voice.")
         schema.inputs.extend([
             io.Audio.Input("audio", optional=True),
@@ -2172,6 +2247,8 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
                          tooltip="Combined visual and audio budget. 0 disables this extra limit."),
         ])
         schema.inputs.append(budget_input)
+        schema.inputs.append(io.Combo.Input("save_layout", options=["separate_files", "bundle"], default="separate_files", optional=True,
+            tooltip="Bundle stores visual and audio members in one version-5 file. Loader modality controls remain independent; this does not enforce AV synchronization."))
         schema.outputs = [io.Custom("H3_REF_MODS").Output("mods"), io.String.Output("details")]
         return schema
 
@@ -2179,7 +2256,9 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
     def execute(cls, name, mode="training", audio=None, audio_vae=None,
                 audio_max_seconds=30.0, audio_max_tokens=5120,
                 audio_budget_policy="error", audio_concept_type="voice",
-                max_total_tokens=0, save=True, subfolder="", description="", **visual):
+                max_total_tokens=0, save=True, subfolder="", description="", save_layout="separate_files", **visual):
+        if save_layout not in ("separate_files", "bundle"):
+            raise ValueError("Unknown Master save layout.")
         has_visual = any(
             value is not None
             for group in (visual.get("refs_image"), visual.get("refs_video"))
@@ -2216,8 +2295,13 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
                 description=description, save=False)[0])
         total = _check_token_budget(mods, max_total_tokens)
         saved_paths = []
+        if save and save_layout == "bundle":
+            path = mod_output_path(name, subfolder)
+            saved_paths.append(save_bundle(path, name, mods))
+            mods = load_bundle(path)
+            print(f"[RefMod Master] Saved bundle: {saved_paths[0]}")
         for mod, _strength in mods:
-            if save:
+            if save and save_layout == "separate_files":
                 mod.path = paths["audio" if mod.kind == "audio" else "visual"]
                 existed = os.path.isfile(mod.path + ".safetensors")
                 destination = mod.save(mod.path)
@@ -2233,6 +2317,7 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
 
 
 NODE_CLASS_MAPPINGS = {
+    "MiniMaxH3RefModBundleSave": MiniMaxH3RefModBundleSave,
     "MiniMaxH3RefModTextEncode": MiniMaxH3RefModTextEncode,
     "MiniMaxH3RefModSave": MiniMaxH3RefModSave,
     "MiniMaxH3RefModMasterExtract": MiniMaxH3RefModMasterExtract,
@@ -2250,6 +2335,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "MiniMaxH3RefModBundleSave": "Save H3 RefMod Bundle",
     "MiniMaxH3RefModTextEncode": "H3 RefMod Text Encode",
     "MiniMaxH3RefModSave": "Save H3 RefMods",
     "MiniMaxH3RefModMasterExtract": "Create H3 RefMod Master",

@@ -39,7 +39,7 @@ export function openRefModLibrary(node, fetchEntries) {
     search.setAttribute("aria-label", "Search RefMods");
     const kind = make("select");
     kind.setAttribute("aria-label", "Reference type");
-    for (const value of ["all", "image", "video", "audio"]) {
+    for (const value of ["all", "image", "video", "audio", "bundle"]) {
         const option = make("option", value === "all" ? "All reference types" : value);
         option.value = value;
         kind.append(option);

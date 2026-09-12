@@ -5,7 +5,24 @@
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C2EV9GW)
 
-## What's new — v0.2.5
+## What's new — v0.2.6
+
+- **Compact additive loaders** — Loader and Axis start with one visible slot.
+  Use **+ Add RefMod** to reveal more, up to the existing eight slots. Each
+  reference's controls stay together; connected slots are protected from removal.
+- **Single-file visual + audio bundles** — Master can save both modalities in
+  one `.safetensors` with `save_layout=bundle`. **Save H3 RefMod Bundle** also
+  packs existing references without running extraction again.
+- **Independent loader controls** — each Loader/Axis slot offers **All / Visual /
+  Audio**, plus visual and audio strengths. Excluded modalities and modalities
+  with strength zero are not loaded. Existing standalone files remain supported.
+- **Bundle-aware library and Config** — find combined files in the library and
+  edit selected components without dropping the other contents.
+
+This is a storage and selection update. It does not fix voice identity or enforce
+audiovisual synchronization. See [single-file bundles](#single-file-bundles).
+
+### v0.2.5 and subsequent fixes
 
 On `main` after v0.2.5: **Refresh RefMods** updates the current Loader/Axis
 dropdowns from the RefMod folders without refreshing all ComfyUI models.
@@ -191,9 +208,12 @@ their combined cost (0 disables that extra limit). A failed extraction or budget
 check does not save either result. Each final file is saved atomically, but saving
 the pair is not a filesystem transaction.
 
-With `name=hero` and `subfolder=characters`, saving creates
+With the default `save_layout=separate_files`, `name=hero` and
+`subfolder=characters`, saving creates
 `characters/hero_visual.safetensors` and `characters/hero_audio.safetensors`.
 Select both in Load H3 RefMods to reconstruct the bundle after restarting.
+Choose `save_layout=bundle` to save `characters/hero.safetensors` instead;
+load that one file and select its modalities in the loader.
 The internal visual extractor reports `(not saved)` because Master postpones
 saving until both extractions and the total-budget check succeed. Master's final
 `Created` / `Replaced` messages show the actual paths. `encode` and `training`
@@ -215,12 +235,14 @@ not a promise of lossless audio reconstruction.
 Save audio to the selected RefMod storage root with an optional `subfolder`. Existing files
 from `models/audio_refmods/` using `audio_refmod_meta` load directly. Both
 common loaders, Apply, Step Curve, Config and the model-scoped bridge accept
-mixed visual/audio bundles. Keep different voices in separate files for
-independent strengths. New saves use format version 4; older visual mods
-remain readable. No `<Name>` prompt triggers are implemented.
+mixed visual/audio bundles. Single-file bundles have per-slot visual/audio
+strengths; multiple audio references inside one file share its audio strength.
+Keep different voices in separate files if they need individual controls.
+Standalone saves use format version 4; combined files use version 5. Older visual
+mods remain readable. No `<Name>` prompt triggers are implemented.
 
 Both loaders now have a **RefMod library** button: search names, subfolders,
-concepts and descriptions, filter image/video/audio, choose a slot and Use.
+concepts and descriptions, filter image/video/audio/bundle, choose a slot and Use.
 Refresh rescans the disk. Connected slots are protected from widget replacement.
 Close and Escape dismiss the library. Registered extra model roots are honored.
 
@@ -253,9 +275,11 @@ safetensors roundtrip and native H3 reference layout without loading the DiT.
 
 ## File format, resolution and token budget
 
-Each file contains a latent and JSON metadata in the safetensors header.
+Standalone files contain a latent and JSON metadata in the safetensors header.
 Visual latents have shape `[1,24,T,H,W]`; audio latents use `[1,32,2,T]`.
-The Master saves two independent files when both modalities are present.
+Version-5 bundles contain an ordered list of these references in one file;
+they keep separate tensors, shapes and metadata. See [BUNDLE_FORMAT.md](BUNDLE_FORMAT.md)
+for the schema used by loaders and third-party pickers.
 
 Visual token count is **T × (H/2) × (W/2)**. H and W are even latent-grid
 dimensions, not image pixels. Audio uses **2 × T** tokens.
@@ -296,6 +320,7 @@ uses the explicit error/prefix-truncation policy described above.
 | Create H3 RefMod | Visual extraction, masks, compression and optional refinement. |
 | Create H3 Audio RefMod | Audio extraction with duration and token limits. |
 | Save H3 RefMods | Save a bundle as an output node; no downstream connection required. |
+| Save H3 RefMod Bundle | Pack selected references into one `.safetensors`; no downstream connection required. |
 | Load H3 RefMod Folder | Ordered image/video references from a folder. |
 | Load H3 RefMods | Up to 8 slots with strength, copies and optional total budget. |
 | Load H3 RefMod Axis | Select A or B with a signed strength; 0 skips the slot. |
@@ -361,6 +386,50 @@ name receive numbered suffixes within the bundle. Files keep their stored
 latents/config; loader strengths remain in the output bundle and are not baked
 into the saved latents. As with other output nodes, ComfyUI may reuse cached
 results when inputs have not changed.
+
+### Single-file bundles
+
+For new references, set **Create H3 RefMod Master → save_layout = bundle**.
+For existing files, connect **Load H3 RefMods → Save H3 RefMod Bundle**, choose
+a name/subfolder, and queue. The output node writes one file; it does not require
+a sampler or Preview. Existing destinations are replaced atomically.
+
+Both loaders expose these controls for each slot:
+
+Only added slots are shown. **Remove RefMod N** clears that slot and restores its
+defaults; slots with connected inputs cannot be removed. Old workflows reveal
+their configured/connected slots automatically, and the library can reveal a
+hidden slot when selecting a file. Slot numbers stay stable when another slot
+is removed. Refresh the browser after updating to load the new interface.
+
+| Control | Effect |
+| --- | --- |
+| `components_N = All` | Load every visual and audio member in that file. |
+| `components_N = Visual` | Load images/videos only. |
+| `components_N = Audio` | Load audio only. |
+| `visual_strength_N`, `audio_strength_N` | Multiply the slot strength for the chosen modality; zero skips it. |
+
+For example, load character A with **All**, and character B with **Visual** to
+use both appearances and only A's audio reference. With slot strength `0.8`
+and audio strength `0.5`, the resulting audio reference strength is `0.4`.
+The total-token budget counts only loaded components, including copies.
+
+The file stores each distinct reference object once, preserving member order.
+Runtime copies and strengths are retained on the Save node's output but are not
+baked into the file. Loading the file later uses the loader's current controls.
+Config preserves unselected members when updating a combined file. To export
+members back into standalone files, use **Save H3 RefMods** with a different
+prefix or subfolder.
+
+Existing standalone RefMods and workflows keep working. Version-5 files require
+a bundle-aware reader; v0.2.5 and older third-party readers are not guaranteed
+to load them. The default Master save layout remains `separate_files`.
+
+Packaging visual and audio references together does **not** bind a voice to a
+character, fix reference mixing, or add synchronization timestamps. Original
+audio passthrough is also separate: this format stores encoded audio latents,
+not the original waveform. To preserve the original soundtrack, connect the
+source loader's AUDIO output to your video-saving workflow.
 
 ### Strength and reference-frame curves
 

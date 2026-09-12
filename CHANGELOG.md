@@ -5,6 +5,15 @@ All notable changes are tracked here. Each version is also published as a
 so you can keep using an older version if a new one changes something you
 rely on.
 
+## v0.2.6 — 2026-09-12
+
+- Make Loader/Axis additive: start with one visible slot, add/remove slots up to eight, group modality controls with their reference, preserve old workflow values and protect connected slots.
+- Add version-5 single-file RefMod bundles containing independent image/video/audio members, with atomic saves and preserved member order.
+- Add Save H3 RefMod Bundle as an output node and opt-in Master save_layout=bundle. Keep standalone saving and existing workflow defaults.
+- Add All/Visual/Audio selection and separate modality strengths to every Loader/Axis slot. Skip excluded tensors and count only selected references in token budgets.
+- Discover combined files in the library; preserve unselected members during Config updates and support export to standalone files.
+- Document the container schema for third-party pickers. Bundling does not add voice binding, AV synchronization, or original-waveform passthrough.
+
 ## v0.2.5 — 2026-09-08
 
 - Rename Extract nodes to Create, with unchanged node IDs. Full Reference and Compressed Reference replace the visible encode/training names; old mode values remain accepted. Rename the identity control to Refinement Steps.

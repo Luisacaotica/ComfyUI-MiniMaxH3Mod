@@ -579,6 +579,7 @@ class H3RefMod:
     # settings that make it work — newbies never have to tune.
     sample_rate: int = 32000
     path: str = ""            # path_no_ext the mod was loaded from / saved to (for re-saving)
+    bundle_index: int = -1  # index in the container at path; -1 for standalone refs
 
     def __post_init__(self):
         if self.kind == "audio":
@@ -660,9 +661,7 @@ class H3RefMod:
 
     # ── serialization ─────────────────────────────────────────────────
 
-    def save(self, path_no_ext: str) -> str:
-        """Save as a single ``{path}.safetensors`` with metadata in the header."""
-        os.makedirs(os.path.dirname(path_no_ext) or ".", exist_ok=True)
+    def metadata(self) -> dict:
         meta = {
             "name": self.name,
             "kind": self.kind,
@@ -682,6 +681,15 @@ class H3RefMod:
         }
         if self.config:
             meta["refmod_config"] = json.dumps(self.config)
+        return meta
+
+    def save(self, path_no_ext: str) -> str:
+        """Save standalone, or update this member without dropping its siblings."""
+        if self.bundle_index >= 0 and os.path.normcase(os.path.abspath(path_no_ext)) == os.path.normcase(os.path.abspath(self.path)):
+            from .bundle import update_member
+            return update_member(self)
+        os.makedirs(os.path.dirname(path_no_ext) or ".", exist_ok=True)
+        meta = self.metadata()
         destination = path_no_ext + ".safetensors"
         fd, temporary = tempfile.mkstemp(prefix=".refmod-", suffix=".tmp", dir=os.path.dirname(destination) or ".")
         os.close(fd)
@@ -702,9 +710,14 @@ class H3RefMod:
             raise ValueError(
                 f"{path_no_ext}.safetensors has no RefMod metadata "
                 f"(header key '{META_KEY}' or sidecar .json missing).")
-        # clone drops the file mmap, so the file isn't locked on Windows and
-        # can be re-saved over the same name
+        if meta.get("kind") == "bundle":
+            raise ValueError("This is a RefMod bundle. Use the current RefMod Loader to select its components.")
+        # Clone releases the file mapping before a possible Windows overwrite.
         latent = load_file(path_no_ext + ".safetensors", device=device)["latent"].clone()
+        return cls.from_metadata(meta, latent, path_no_ext)
+
+    @classmethod
+    def from_metadata(cls, meta, latent, path_no_ext="", bundle_index=-1):
         raw_config = meta.get("refmod_config")
         try:
             config = json.loads(raw_config) if isinstance(raw_config, str) else {}
@@ -727,6 +740,7 @@ class H3RefMod:
             concept_type=str(meta.get("concept_type", "generic") or "generic"),
             config=config if isinstance(config, dict) else {},
             path=path_no_ext,
+            bundle_index=bundle_index,
             sample_rate=int(meta.get("sample_rate", 32000)),
         )
 
