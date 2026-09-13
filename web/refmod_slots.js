@@ -18,11 +18,13 @@ export function installRefModSlots(nodeType) {
             const state = this._refmodSlots;
             if (!state) return original?.apply(this, args);
             const displayOrder = this.widgets;
+            state.schemaOrderDepth++;
             this.widgets = [...state.originals, ...displayOrder.filter(w => !state.originals.includes(w))];
             try {
                 return original?.apply(this, args);
             } finally {
                 this.widgets = displayOrder;
+                state.schemaOrderDepth--;
                 if (method === "configure") state.sync();
             }
         };
@@ -80,6 +82,9 @@ function setupSlots(node) {
     }
 
     function sync() {
+        // configure fires connection callbacks before assigning widget values.
+        // Keep schema order until the entire positional restore has finished.
+        if (node._refmodSlots.schemaOrderDepth) return;
         const requested = node.properties.refmod_visible_slots;
         const visible = new Set((Array.isArray(requested) ? requested : [slots[0]])
             .filter(slot => groups.has(slot)));
@@ -125,7 +130,7 @@ function setupSlots(node) {
         if (next != null) node.properties.refmod_visible_slots.push(next);
         sync();
     }, {serialize: false});
-    node._refmodSlots = {originals, sync};
+    node._refmodSlots = {originals, sync, schemaOrderDepth: 0};
     sync();
 }
 

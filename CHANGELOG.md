@@ -5,6 +5,11 @@ All notable changes are tracked here. Each version is also published as a
 so you can keep using an older version if a new one changes something you
 rely on.
 
+## Unreleased
+
+- Fix Loader/Axis settings resetting when switching workflow tabs or reopening workflows: defer slot regrouping until widget restoration finishes (#18).
+- Repair Apply's reactive MatchType socket on older frontends whose canvas socket classes use private fields, preventing missing controls while preserving conditioning type matching (#17).
+
 ## v0.2.6 — 2026-09-12
 
 - Make Loader/Axis additive: start with one visible slot, add/remove slots up to eight, group modality controls with their reference, preserve old workflow values and protect connected slots.
