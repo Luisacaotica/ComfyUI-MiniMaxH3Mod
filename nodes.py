@@ -52,7 +52,7 @@ from comfy_api.latest import io
 from comfy_execution.validation import validate_node_input
 from comfy_extras.nodes_audio import vae_decode_audio
 from .library import register_routes
-from .prompt import MiniMaxH3RefModTextEncode
+from .prompt import MiniMaxH3RefModTextEncode, reference_map
 from .bundle import load_bundle, save_bundle, members as bundle_members
 
 from .common import (
@@ -2065,8 +2065,8 @@ class MiniMaxH3RefModInspect:
                 "tooltip": "Full video decodes every stored latent frame; increases memory use. Comparison appends the weakened sequence after the stored sequence. Audio remains limited to two seconds.",
             }),
         }}
-    RETURN_TYPES = ("STRING", "IMAGE", "AUDIO")
-    RETURN_NAMES = ("details", "image_preview", "audio_preview")
+    RETURN_TYPES = ("STRING", "IMAGE", "AUDIO", "STRING")
+    RETURN_NAMES = ("details", "image_preview", "audio_preview", "reference_map")
     FUNCTION = "inspect"
     CATEGORY = "MiniMax-H3/mod"
 
@@ -2118,7 +2118,7 @@ class MiniMaxH3RefModInspect:
                         raise ValueError(f"Expected H3 decoded RGB frames, got {tuple(pixels.shape)}.")
                     decoded.append(pixels)
                 images = torch.cat(decoded, dim=0)
-        return (report, images, audio)
+        return (report, images, audio, reference_map(mods))
 
 
 class MiniMaxH3RefModAudioExtract:

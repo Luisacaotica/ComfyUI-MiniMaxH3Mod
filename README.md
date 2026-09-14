@@ -327,7 +327,7 @@ uses the explicit error/prefix-truncation policy described above.
 | Apply H3 RefMod | Append refs to native CONDITIONING or an existing pack-conditioning object. |
 | H3 RefMod Step Curve | Change marked RefMod latents during denoising via the MODEL connection. |
 | Fix H3 RefMod Config | Persist Apply/Step Curve settings in mod metadata. |
-| Inspect H3 RefMod | Metadata, token totals and optional VAE previews. |
+| Inspect H3 RefMod | Metadata, token totals, reference map and optional VAE previews. |
 | Continuum RefMod Bridge | Inject refs through the MODEL sampling hook. |
 
 Older `Apply H3 RefMod (Cond)` workflows migrate to the unified Apply node.
@@ -342,6 +342,11 @@ and the H3 video VAE for visual references. Enter your prompt and connect the
 CONDITIONING output to the sampler's positive input. Keep the workflow's normal
 negative conditioning and generation latent. This node already attaches the
 references: do not Apply or Bridge the same bundle again.
+
+To generate a prompt with an LLM, connect the same `mods` to Inspect H3 RefMod
+and H3 RefMod Text Encode. Set Inspect's `preview=off`, send its `reference_map`
+output to the LLM, then connect the generated prompt to Text Encode. Inspect
+produces the map without CLIP or VAE execution, avoiding a dependency cycle.
 
 Connect `reference_map` to a text display to see the actual mapping. For example,
 if it reports `<Picture 1> = alice` and `<Picture 2> = beth`, try:

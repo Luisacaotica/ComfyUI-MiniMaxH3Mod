@@ -7,6 +7,7 @@ rely on.
 
 ## Unreleased
 
+- Add a reference_map output to Inspect H3 RefMod for LLM prompt generation before Text Encode, using the same reference numbering (#19).
 - Fix Loader/Axis settings resetting when switching workflow tabs or reopening workflows: defer slot regrouping until widget restoration finishes (#18).
 - Repair Apply's reactive MatchType socket on older frontends whose canvas socket classes use private fields, preventing missing controls while preserving conditioning type matching (#17).
 

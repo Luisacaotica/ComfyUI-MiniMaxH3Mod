@@ -7,6 +7,20 @@ from comfy.text_encoders.minimax import MiniMaxH3Tokenizer
 from comfy.ldm.minimax.vae import MiniMaxH3VideoVAE
 
 
+def reference_map(mods):
+    counters = {"image": 0, "video": 0, "audio": 0}
+    labels = {"image": "Picture", "video": "Video", "audio": "Audio"}
+    mapping = []
+    for mod, strength in mods:
+        if not math.isfinite(strength) or not 0 <= strength <= 1:
+            raise ValueError("RefMod strength must be between 0 and 1.")
+        if strength == 0:
+            continue
+        counters[mod.kind] += 1
+        mapping.append(f"<{labels[mod.kind]} {counters[mod.kind]}> = {mod.name}")
+    return "\n".join(mapping) or "No active RefMods."
+
+
 class MiniMaxH3RefModTextEncode:
     @classmethod
     def INPUT_TYPES(cls):
@@ -38,28 +52,19 @@ class MiniMaxH3RefModTextEncode:
         if not math.isfinite(reference_fps) or not 1 <= reference_fps <= 120:
             raise ValueError("reference_fps must be between 1 and 120.")
         # Keep zero-strength slots out of both the presentation and DiT payload.
-        active = []
-        for mod, strength in mods:
-            if not math.isfinite(strength) or not 0 <= strength <= 1:
-                raise ValueError("RefMod strength must be between 0 and 1.")
-            if strength > 0:
-                active.append((mod, strength))
+        mapping = reference_map(mods)
+        active = [(mod, strength) for mod, strength in mods if strength > 0]
         _check_token_budget(active, max_total_tokens)
         if any(mod.kind != "audio" for mod, _ in active) and vae is None:
             raise ValueError("Connect the H3 video VAE to present visual RefMods to CLIP.")
         if any(mod.kind != "audio" for mod, _ in active) and not isinstance(vae.first_stage_model, MiniMaxH3VideoVAE):
             raise ValueError("Visual RefMods require the MiniMax H3 video VAE.")
 
-        items, blocks, mapping = [], [], []
-        counters = {"image": 0, "video": 0, "audio": 0}
-        labels = {"image": "Picture", "video": "Video", "audio": "Audio"}
+        items, blocks = [], []
         for mod, strength in active:
             block = mod.ref_block(strength)
             block["refmod"] = True
             kind = block["kind"]
-            counters[kind] += 1
-            label = f"<{labels[kind]} {counters[kind]}>"
-            mapping.append(f"{label} = {mod.name}")
             item = {"type": kind}
             if kind != "audio":
                 # Decode the same weakened latent that the DiT receives. ComfyUI
@@ -94,4 +99,4 @@ class MiniMaxH3RefModTextEncode:
             if blocks:
                 metadata["minimax_refs"] = list(blocks)
             out.append([embedding, metadata])
-        return out, "\n".join(mapping) or "No active RefMods."
+        return out, mapping
