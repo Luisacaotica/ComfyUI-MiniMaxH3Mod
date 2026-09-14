@@ -12,7 +12,10 @@ export function installRefModSlots(nodeType) {
     };
     // LiteGraph stores widget values by position. Keep the original schema
     // order for saving/loading even though the canvas groups them by slot.
-    for (const method of ["serialize", "configure"]) {
+    // ComfyUI frontend >= 1.5x saves via serializeFromStoreState() and never
+    // calls serialize(), so that path has to be covered as well or workflows
+    // get written in display order and shift on the next load.
+    for (const method of ["serialize", "serializeFromStoreState", "configure"]) {
         const original = nodeType.prototype[method];
         nodeType.prototype[method] = function(...args) {
             const state = this._refmodSlots;
@@ -86,8 +89,14 @@ function setupSlots(node) {
         // Keep schema order until the entire positional restore has finished.
         if (node._refmodSlots.schemaOrderDepth) return;
         const requested = node.properties.refmod_visible_slots;
-        const visible = new Set((Array.isArray(requested) ? requested : [slots[0]])
-            .filter(slot => groups.has(slot)));
+        // A saved workflow can bring this back as {0: 1, 1: 2, ...} rather than
+        // an array, so accept either shape before falling back to slot one.
+        const requestedSlots = Array.isArray(requested)
+            ? requested
+            : requested && typeof requested === "object"
+                ? Object.values(requested)
+                : [slots[0]];
+        const visible = new Set(requestedSlots.filter(slot => groups.has(slot)));
         for (const slot of slots) if (used(slot) || linked(slot)) visible.add(slot);
         node.properties.refmod_visible_slots = [...visible].sort((a, b) => a - b);
         const grouped = [...groups.values()].flat();
