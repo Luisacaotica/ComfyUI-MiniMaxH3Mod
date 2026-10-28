@@ -754,6 +754,19 @@ temporal pooling/sampling and the token cap can still discard information.
 In encode mode, multiple refs use a common canvas based on the first source;
 other aspect ratios can be center-cropped to fit it.
 
+A stack of stills is saved as one video-kind reference. H3 lays references out
+on the time axis between the text and the generated video, so the stack sits
+right before the first output frame, and the output can open on its last image
+before cutting to the prompted scene ([#24](https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod/issues/24)).
+Set `image_refs` to `separate` on Create (or Master) to keep every reference as
+its own member of one version-5 bundle instead: stills become image-kind
+references with one time position each, like native Ref2VA pictures, and videos
+stay separate video references. The file still loads from one Loader slot. In
+this mode `multiplier` repeats video references only (use the loader's
+`copies` for stills), a `truncate` budget drops whole stills, and Master's
+`separate_files` layout saves the visual members together as `<name>_visual`.
+`merge` takes precedence over `separate`. The default `stack` is unchanged.
+
 With `merge=True` in training mode, one grid minimizes mean reconstruction
 error across targets. For equal target shapes, this has the same gradient as
 reconstructing their average. That is not semantic discovery of what the
