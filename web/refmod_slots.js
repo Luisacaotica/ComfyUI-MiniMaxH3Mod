@@ -26,6 +26,14 @@ export function installRefModSlots(nodeType) {
             state.schemaOrderDepth++;
             this.widgets = [...state.originals, ...displayOrder.filter(w => !state.originals.includes(w))];
             try {
+                const named = method === "configure" && args[0]?.widgets_values_named;
+                if (named && typeof named === "object" && !Array.isArray(named)) {
+                    // v0.2.7 saved positions in display order. The named map is
+                    // written from the same widgets, so it is order-independent.
+                    const values = args[0].widgets_values ?? [];
+                    args[0] = {...args[0], widgets_values: this.widgets.filter(w => w.serialize !== false)
+                        .map((w, i) => Object.hasOwn(named, w.name) ? named[w.name] : i < values.length ? values[i] : w.value)};
+                }
                 return original?.apply(this, args);
             } finally {
                 this.widgets = displayOrder;

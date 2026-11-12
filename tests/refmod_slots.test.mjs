@@ -89,6 +89,41 @@ for (const stableView of [false,true]) for (const axis of [false,true]) {
     assert.deepEqual(node.serializeFromStoreState(), saved);
     assert.deepEqual(node.widgets, displayOrder);
     assert.equal(node._refmodSlots.schemaOrderDepth, 0);
+    // v0.2.7 wrote both snapshots from the slot-grouped display order.
+    const oldSave = {
+        properties:structuredClone(node.properties),
+        widgets_values:node.widgets.filter(w=>w.serialize!==false).map(w=>w.options.serialize===false?null:w.value),
+        widgets_values_named:Object.fromEntries(node.widgets.filter(w=>w.serialize!==false)
+            .map(w=>[w.name,w.options.serialize===false?null:w.value])),
+    };
+    const oldSnapshot = structuredClone(oldSave);
+    Object.freeze(oldSave.widgets_values);
+    Object.freeze(oldSave.widgets_values_named);
+    Object.freeze(oldSave);
+    const repaired = new Node(); repaired.configure(oldSave);
+    assert.equal(get(repaired,mod+'2').value,'folder/hero');
+    assert.equal(get(repaired,'audio_strength_2').value,.25);
+    assert.deepEqual(repaired.serializeFromStoreState().widgets_values,saved.widgets_values);
+    assert.deepEqual(repaired.properties.refmod_visible_slots,[1,2]);
+    assert.deepEqual(oldSave,oldSnapshot);
+    // Current saves and partial named maps retain schema-position fallbacks.
+    const namedSave = {...saved,widgets_values_named:oldSave.widgets_values_named};
+    const namedRestored = new Node(); namedRestored.configure(namedSave);
+    assert.deepEqual(namedRestored.serializeFromStoreState().widgets_values,saved.widgets_values);
+    const partial = {...oldSave,widgets_values:[...saved.widgets_values],
+        widgets_values_named:{...oldSave.widgets_values_named}};
+    delete partial.widgets_values_named.audio_strength_2;
+    const audioIndex = node._refmodSlots.originals.findIndex(w=>w.name==='audio_strength_2');
+    partial.widgets_values[audioIndex]=.625;
+    const partialSnapshot = structuredClone(partial);
+    const partialRestored = new Node(); partialRestored.configure(partial);
+    assert.equal(get(partialRestored,mod+'2').value,'folder/hero');
+    assert.equal(get(partialRestored,'audio_strength_2').value,.625);
+    assert.deepEqual(partial,partialSnapshot);
+    for (const named of [null, false, 'invalid', []]) {
+        const positional = new Node(); positional.configure({...saved,widgets_values_named:named});
+        assert.deepEqual(positional.serializeFromStoreState().widgets_values,saved.widgets_values);
+    }
     // Vue/store snapshots may restore visible rows as an indexed object.
     const fromStore = new Node();
     fromStore.configure({...saved, properties:{refmod_visible_slots:{0:1,1:2,2:4}}});
@@ -130,6 +165,10 @@ for (const stableView of [false,true]) for (const axis of [false,true]) {
     legacy.widgets_values[22]='legacy/eighth';
     const migrated=new Node(); migrated.configure(legacy);
     assert.equal(get(migrated,mod+'8').value,'legacy/eighth');
+    // Widgets absent from both maps keep their defaults instead of undefined.
+    const sparse=new Node(); sparse.configure({...legacy,widgets_values_named:{[mod+'8']:'legacy/eighth'}});
+    assert.equal(get(sparse,mod+'8').value,'legacy/eighth');
+    assert.equal(get(sparse,'audio_strength_8').value,1);
     assert.ok(migrated.properties.refmod_visible_slots.includes(8));
     assert.equal(get(migrated,'audio_strength_8').value,1);
     // Library selection in a hidden slot reveals it via its existing callback.
