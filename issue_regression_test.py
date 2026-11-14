@@ -204,6 +204,75 @@ class IssueRegressions(unittest.TestCase):
                 expected = COMMON.sample_video_for_vae(clip,limit if mode=='encode' else None)
                 self.assertTrue(torch.equal(seen[-1], expected))
 
+    # Issue #24: stacked stills become one video ref that sits right before frame 0.
+    @staticmethod
+    def numbered_vae():
+        # every encode returns a latent filled with its call number, so references stay distinguishable
+        calls = []
+        def encode(pixels):
+            calls.append(None)
+            frames = 1 if pixels.shape[0] == 1 else (pixels.shape[0]-5)//17*5+2
+            return torch.full((1,24,frames,4,4), float(len(calls)))
+        return types.SimpleNamespace(encode=encode)
+
+    def test_separate_stills_are_image_members_of_one_bundle(self):
+        refs = {f"ref_image_{i}": torch.zeros(1,64,64,3) for i in range(3)}
+        stacked = N.MiniMaxH3RefModExtract.execute(
+            "alina", mode="encode", refs_image=refs, vae=self.numbered_vae(), save=False)[0]
+        self.assertEqual([(m.kind, m.latent_t) for m, _ in stacked], [("video", 3)])
+        with patch.object(COMMON, "refmods_dir", return_value=str(self.root)):
+            result = N.MiniMaxH3RefModExtract.execute(
+                "alina", mode="encode", refs_image=refs, vae=self.numbered_vae(),
+                save=True, image_refs="separate")
+        mods = result[0]
+        self.assertEqual([(m.kind, m.latent_t, s) for m, s in mods], [("image", 1, 1.0)] * 3)
+        for i, (mod, _) in enumerate(mods):
+            self.assertTrue(torch.equal(mod.latent[:,:,0], stacked[0][0].latent[:,:,i]))
+            self.assertEqual(mod.bundle_index, i)
+        meta = N.read_refmod_meta(str(self.root / "alina"))
+        self.assertEqual(meta["kind"], "bundle")
+        self.assertEqual([(m["name"], m["kind"]) for m in meta["members"]],
+                         [("alina_01","image"),("alina_02","image"),("alina_03","image")])
+        details = json.loads(result[1])
+        self.assertEqual(details["kind"], "bundle")
+        self.assertEqual(details["tokens"], sum(m.token_count for m, _ in mods))
+        self.assertEqual(len(details["saved_paths"]), 1)
+
+    def test_separate_keeps_video_refs_and_yields_to_merge(self):
+        vae = self.numbered_vae()
+        mods = N.MiniMaxH3RefModExtract.execute(
+            "mixed", mode="encode", refs_image={"ref_image_0": torch.zeros(1,64,64,3)},
+            refs_video={"ref_video_0": torch.zeros(22,64,64,3)}, latent_frames=22,
+            vae=vae, save=False, image_refs="separate")[0]
+        self.assertEqual([(m.kind, m.latent_t) for m, _ in mods], [("image", 1), ("video", 7)])
+        merged = N.MiniMaxH3RefModExtract.execute(
+            "merged", mode="training", identity=0, merge=True, vae=vae, save=False, image_refs="separate",
+            refs_image={f"ref_image_{i}": torch.zeros(1,64,64,3) for i in range(2)})[0]
+        self.assertEqual(len(merged), 1)
+
+    def test_separate_budget_drops_whole_stills_or_stops(self):
+        args = dict(name="budget", mode="encode", save=False, image_refs="separate", max_tokens=8,
+                    refs_image={f"ref_image_{i}": torch.zeros(1,64,64,3) for i in range(4)})
+        mods = N.MiniMaxH3RefModExtract.execute(vae=self.numbered_vae(), **args)[0]
+        # four 4x4 stills cost 4 tokens each; the existing frame selection keeps the first and last
+        self.assertEqual([m.latent.flatten()[0].item() for m, _ in mods], [1.0, 4.0])
+        self.assertEqual([m.kind for m, _ in mods], ["image", "image"])
+        with self.assertRaisesRegex(ValueError, "requires 16 visual tokens"):
+            N.MiniMaxH3RefModExtract.execute(vae=self.numbered_vae(), budget_policy="error", **args)
+
+    def test_master_saves_separate_visual_refs_as_one_bundle(self):
+        ids = lambda cls: [getattr(i, "id", None) for i in cls.define_schema().inputs]
+        self.assertEqual(ids(N.MiniMaxH3RefModExtract)[-2:], ["budget_policy", "image_refs"])
+        self.assertEqual(ids(N.MiniMaxH3RefModMasterExtract)[-3:], ["budget_policy", "save_layout", "image_refs"])
+        with patch.object(COMMON, "refmods_dir", return_value=str(self.root)):
+            result = N.MiniMaxH3RefModMasterExtract.execute(
+                "hero", mode="encode", vae=self.numbered_vae(), image_refs="separate",
+                refs_image={f"ref_image_{i}": torch.zeros(1,64,64,3) for i in range(2)})
+        meta = N.read_refmod_meta(str(self.root / "hero_visual"))
+        self.assertEqual([m["kind"] for m in meta["members"]], ["image", "image"])
+        self.assertEqual([m.bundle_index for m, _ in result[0]], [0, 1])
+        self.assertEqual(len(json.loads(result[1])["saved_paths"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

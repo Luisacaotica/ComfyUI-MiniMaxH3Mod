@@ -1545,6 +1545,65 @@ class MiniMaxH3RefModMaskList:
         return (items,)
 
 
+def _separate_ref_mods(name, frames, frame_is_video, source_shapes, mode, grid, ref_resolution,
+                       optimize_steps, multiplier, max_tokens, budget_policy, tags, description,
+                       concept_type) -> List[H3RefMod]:
+    """One H3RefMod per reference for Create's image_refs="separate".
+
+    Stills stay single-frame image refs, so each takes one time position like a
+    native Ref2VA picture instead of becoming a frame of a video ref. Video refs
+    keep their own frames. Repetition along time would turn a still into a video
+    ref, so ``multiplier`` only repeats video refs; the loader's copies repeat
+    image refs. Truncation can only drop whole stills, and needs them to share a
+    shape so the existing frame selection in ``fit_token_budget`` applies.
+    """
+    if multiplier > 1 and not all(frame_is_video):
+        print("[MiniMaxH3RefModExtract] image_refs=separate: multiplier repeats video refs only; "
+              "use the loader's copies to repeat image refs.")
+    latents = [z.repeat(1, 1, multiplier, 1, 1) if multiplier > 1 and is_video else z
+               for z, is_video in zip(frames, frame_is_video)]
+    keep = list(range(len(latents)))
+    tokens = sum(z.shape[2] * (z.shape[3] // 2) * (z.shape[4] // 2) for z in latents)
+    if max_tokens > 0 and tokens > max_tokens:
+        if budget_policy == "error":
+            raise ValueError(f"RefMod '{name}' requires {tokens} visual tokens after multiplier; budget is {max_tokens}. Increase max_tokens, reduce extraction settings, or select truncate. Nothing was saved.")
+        if len({tuple(z.shape) for z in latents}) != 1 or latents[0].shape[2] != 1:
+            raise ValueError(f"RefMod '{name}' requires {tokens} visual tokens; budget is {max_tokens}. With image_refs=separate, "
+                             f"truncate can only drop whole stills of one size. Increase max_tokens, lower ref_resolution or "
+                             f"use fewer references. Nothing was saved.")
+        fitted = fit_token_budget(torch.cat(latents, dim=2), max_tokens, name)
+        # fit_token_budget keeps a subset of whole frames in order; map them back to their references
+        keep, start = [], 0
+        for t in range(fitted.shape[2]):
+            start = next(i for i in range(start, len(latents)) if torch.equal(latents[i][:, :, 0], fitted[:, :, t]))
+            keep.append(start)
+            start += 1
+    mods = []
+    for n, i in enumerate(keep):
+        z = latents[i]
+        t = z.shape[2]
+        pool = (f"full-res {z.shape[4] * 16}x{z.shape[3] * 16}px (short-edge cap {ref_resolution}px)"
+                if mode == "encode" else f"{t}x{grid[0]}x{grid[1]}")
+        mods.append(H3RefMod(
+            name=f"{name}_{n + 1:02d}",
+            kind="video" if t > 1 else "image",
+            latent=z,
+            latent_h=z.shape[3],
+            latent_w=z.shape[4],
+            latent_t=t,
+            mode=mode,
+            source="video" if frame_is_video[i] else "image",
+            source_shape=source_shapes[i],
+            pool=pool,
+            optimize_steps=optimize_steps,
+            tags=[f"separate ref {i + 1}/{len(latents)}", *tags]
+                 + ([f"x{multiplier} repeat"] if multiplier > 1 and frame_is_video[i] else []),
+            description=description,
+            concept_type=concept_type,
+        ))
+    return mods
+
+
 class MiniMaxH3RefModExtract(io.ComfyNode):
     """
     Turn one or more references of the same concept into a RefMod.
@@ -1588,6 +1647,13 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
     ``max_tokens`` (0 = off) hard-caps the total injected tokens: when the
     stacked refs exceed it, near-duplicate latent frames are dropped first,
     then frames are resampled to fit (see ``core.fit_token_budget``).
+
+    ``image_refs`` = ``separate`` keeps every reference as its own member of
+    one version-5 bundle instead of stacking them: stills become image-kind
+    refs (one time position each, like native Ref2VA pictures) and videos stay
+    their own video refs.  H3 packs references on the time axis directly
+    before the generated video, so a stack of stills is a short clip sitting
+    right before frame 0, and the output can open on its last image (#24).
     """
 
     @classmethod
@@ -1606,7 +1672,9 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 "a fraction of the tokens; 'encode' stores the full-res encode "
                 "(max identity, MB-size mod). Flip 'merge' on to extract a "
                 "collection as ONE consensus latent (joint refinement against "
-                "every ref) instead of a stack."
+                "every ref) instead of a stack. Set image_refs to 'separate' to save "
+                "each ref as its own member of one bundle (stills become image refs) "
+                "when stacked stills show up at the start of the output."
             ),
             category="MiniMax-H3/mod",
             inputs=[
@@ -1736,10 +1804,18 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                     tooltip="Connect Collect H3 RefMod Masks to preserve different mask sizes. One mask broadcasts; otherwise images, videos, then folder references in order. Use mask OR mask_list."),
                 io.Combo.Input("budget_policy", options=["truncate", "error"], default="truncate", optional=True,
                     tooltip="On max_tokens overflow: truncate uses the existing frame reduction; error stops without saving. 0 max_tokens disables the cap."),
+                # Appended last so saved workflows keep their widget positions.
+                io.Combo.Input("image_refs", options=["stack", "separate"], default="stack", optional=True,
+                    tooltip="stack: all references become one video-kind ref (previous behaviour). H3 places "
+                            "references on the time axis right before the generated video, so a stack of "
+                            "stills can show up as the opening frames (issue #24). separate: each reference "
+                            "is its own member of one bundle file; stills become image refs like native "
+                            "Ref2VA pictures and load from a single loader slot. Ignored with merge."),
             ],
             outputs=[
                 io.Custom("H3_REF_MODS").Output("mods",
-                    tooltip="Bundle with this one mod at strength 1.0. Feed it to Apply H3 RefMod "
+                    tooltip="Bundle with this mod at strength 1.0 (one member per reference when "
+                            "image_refs is separate). Feed it to Apply H3 RefMod "
                             "(or Load H3 RefMods after saving)."),
                 io.String.Output("details"),
             ],
@@ -1751,9 +1827,12 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                 ref_resolution=1024, pool_h=16, pool_w=16, latent_frames=16,
                 identity=500, multiplier=1, max_tokens=0, description="", save=True,
                 concept_type="generic", mask=None, background_retention=0.0, subfolder="",
-                merge=False, motion_only=False, extraction_preset="manual", budget_policy="truncate", mask_list=None, **legacy) -> io.NodeOutput:
+                merge=False, motion_only=False, extraction_preset="manual", budget_policy="truncate", mask_list=None,
+                image_refs="stack", **legacy) -> io.NodeOutput:
         if budget_policy not in ("truncate", "error"):
             raise ValueError("Unknown visual token budget policy.")
+        if image_refs not in ("stack", "separate"):
+            raise ValueError("image_refs must be 'stack' or 'separate'.")
         name = _sanitize_name(name)
         # old pre-Autogrow workflows pass their widget values through as kwargs:
         # map them onto the new inputs so those saved workflows keep running.
@@ -1780,6 +1859,9 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
         if preset_replaced:
             print(f"[MiniMaxH3RefModExtract] preset={extraction_preset} replaces {preset_replaced}")
         ignored = []
+        separate = image_refs == "separate" and not (merge and mode == "training")
+        if image_refs == "separate" and not separate:
+            ignored.append("image_refs=separate (merge builds one shared latent)")
         if mode == "encode":
             ignored.append("pool_h, pool_w, Refinement Steps, merge, motion_only (Full Reference)")
         if mask is None and mask_list is None:
@@ -1887,6 +1969,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                     f"Connect one mask (broadcasts to every ref) or exactly one per ref.")
 
         frames = []
+        frame_is_video = []  # parallel to frames; used by image_refs="separate"
         n_img = n_vid = 0
         source_shapes = []
         n_refs = len(sources)
@@ -1984,6 +2067,7 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
                     print(f"[MiniMaxH3RefModExtract] {label}: identity refinement done")
             if merge_refs is None:
                 frames.append(pooled)
+                frame_is_video.append(is_video)
             if is_video:
                 n_vid += 1
             else:
@@ -2002,6 +2086,35 @@ class MiniMaxH3RefModExtract(io.ComfyNode):
             print(f"[MiniMaxH3RefModExtract] warning: 'identity' only applies to "
                   f"training mode — encode mode stores the actual encode, so "
                   f"identity={identity} was ignored.")
+
+        if separate:
+            tags = []
+            if motion_applied:
+                tags.append("motion_only")
+            if masks is not None:
+                tags.append(f"masked (bg_retention={background_retention})")
+            mods = _separate_ref_mods(
+                name, frames, frame_is_video, source_shapes, mode, (gh, gw), ref_resolution,
+                int(identity) if mode == "training" else 0, multiplier, max_tokens, budget_policy,
+                tags, (description or "").strip(), concept_type)
+            saved_paths = []
+            if save:
+                path_no_ext = mod_output_path(name, subfolder)
+                saved_paths.append(save_bundle(path_no_ext, name, [(mod, 1.0) for mod in mods]))
+                bundle = load_bundle(path_no_ext)  # members carry path/bundle_index for Fix H3 RefMod Config
+                print(f"[MiniMaxH3RefModExtract] saved {len(mods)} separate references in one bundle -> {saved_paths[0]}")
+            else:
+                bundle = [(mod, 1.0) for mod in mods]
+                print(f"[MiniMaxH3RefModExtract] {len(mods)} separate references (not saved)")
+            for mod, _strength in bundle:
+                print(f"[MiniMaxH3RefModExtract]   {_summarize(mod)}")
+            details = json.dumps({"name": name, "kind": "bundle",
+                                  "members": [{"name": m.name, "kind": m.kind, "latent_frames": m.latent_t,
+                                               "tokens": m.token_count} for m, _ in bundle],
+                                  "tokens": sum(m.token_count for m, _ in bundle),
+                                  "source_shape": " +".join(source_shapes),
+                                  "saved_paths": saved_paths}, indent=2, ensure_ascii=False)
+            return io.NodeOutput(bundle, details, ui=ui.PreviewText(details))
 
         merged_n = 0
         if merge_refs is not None:
@@ -2266,6 +2379,7 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         schema = MiniMaxH3RefModExtract.define_schema()
+        image_refs_input = schema.inputs.pop()  # re-appended last to keep saved Master widget positions
         budget_input = schema.inputs.pop()
         schema.node_id = "MiniMaxH3RefModMasterExtract"
         schema.display_name = "Create H3 RefMod Master"
@@ -2287,6 +2401,7 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
         schema.inputs.append(budget_input)
         schema.inputs.append(io.Combo.Input("save_layout", options=["separate_files", "bundle"], default="separate_files", optional=True,
             tooltip="Bundle stores visual and audio members in one version-5 file. Loader modality controls remain independent; this does not enforce AV synchronization."))
+        schema.inputs.append(image_refs_input)
         schema.outputs = [io.Custom("H3_REF_MODS").Output("mods"), io.String.Output("details")]
         return schema
 
@@ -2338,7 +2453,16 @@ class MiniMaxH3RefModMasterExtract(io.ComfyNode):
             saved_paths.append(save_bundle(path, name, mods))
             mods = load_bundle(path)
             print(f"[RefMod Master] Saved bundle: {saved_paths[0]}")
+        visual = [(mod, strength) for mod, strength in mods if mod.kind != "audio"]
+        if save and save_layout == "separate_files" and len(visual) > 1:
+            # image_refs=separate: the visual references share <name>_visual as one bundle
+            existed = os.path.isfile(paths["visual"] + ".safetensors")
+            saved_paths.append(save_bundle(paths["visual"], name + "_visual", visual))
+            print(f"[RefMod Master] {'Replaced' if existed else 'Created'}: {saved_paths[-1]} ({len(visual)} visual references)")
+            mods = load_bundle(paths["visual"]) + [(mod, strength) for mod, strength in mods if mod.kind == "audio"]
         for mod, _strength in mods:
+            if mod.bundle_index >= 0 and save_layout == "separate_files":
+                continue  # saved in the visual bundle above
             if save and save_layout == "separate_files":
                 mod.path = paths["audio" if mod.kind == "audio" else "visual"]
                 existed = os.path.isfile(mod.path + ".safetensors")

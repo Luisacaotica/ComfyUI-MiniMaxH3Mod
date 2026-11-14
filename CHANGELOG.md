@@ -7,6 +7,7 @@ rely on.
 
 ## Unreleased
 
+- Add opt-in `image_refs=separate` to Create H3 RefMod and Master: each reference becomes its own member of one version-5 bundle, so stills are image-kind references instead of frames of one video reference sitting right before the output, which can open the output on the last stacked image (#24). The default `stack` is unchanged; the new input is appended last so saved workflows keep their widget positions.
 - Correct visual reference sampling to H3's 17k+5 video grid in the node and CLI. Preserve all frames of aligned clips and both endpoints when uniformly sampling; references/caps below five frames use the first image.
 - Support MPS-resident RefMod latents without global CPU fallback: pool and blur explicitly on CPU, preserving return device, dtype and autograd. Synchronize MPS in the refinement timing harness.
 
